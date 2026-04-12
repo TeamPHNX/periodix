@@ -8,21 +8,19 @@ interface SduiPanelProps {
 }
 
 export default function SduiPanel({ isOpen, onClose }: SduiPanelProps) {
-    const [showPanel, setShowPanel] = useState(false);
     const [animating, setAnimating] = useState(false);
+    const [hasOpenedOnce, setHasOpenedOnce] = useState(false);
 
     useEffect(() => {
         if (isOpen) {
-            setShowPanel(true);
+            setHasOpenedOnce(true);
             requestAnimationFrame(() => setAnimating(true));
         } else {
             setAnimating(false);
-            const timer = setTimeout(() => setShowPanel(false), 300);
-            return () => clearTimeout(timer);
         }
     }, [isOpen]);
 
-    if (!showPanel) return null;
+    if (!hasOpenedOnce) return null;
 
     const handleBackdropClick = (e: React.MouseEvent) => {
         if (e.target === e.currentTarget) {
@@ -32,7 +30,7 @@ export default function SduiPanel({ isOpen, onClose }: SduiPanelProps) {
 
     return createPortal(
         <div
-            className={`fixed inset-0 z-50 flex justify-end bg-black/20 backdrop-blur-sm transition-opacity duration-300 ${animating ? 'opacity-100' : 'opacity-0'}`}
+            className={`fixed inset-0 z-50 flex justify-end bg-black/20 backdrop-blur-sm transition-opacity duration-300 ${animating ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
             onClick={handleBackdropClick}
         >
             <div
@@ -40,7 +38,7 @@ export default function SduiPanel({ isOpen, onClose }: SduiPanelProps) {
             >
                 <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800">
                     <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
-                        SDUI Chat
+                        SDUI Chats
                     </h2>
                     <button
                         onClick={onClose}

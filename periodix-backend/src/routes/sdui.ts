@@ -7,6 +7,13 @@ import { SduiClient } from '@teamphnx/sduiapi';
 
 const router = express.Router();
 
+function normalizeSchoolSlink(input: string): string {
+    return input
+        .trim()
+        .replace(/^['"]|['"]$/g, '')
+        .toLowerCase();
+}
+
 router.get('/chats', authMiddleware, async (req, res) => {
     try {
         if (!req.user?.id)
@@ -89,15 +96,39 @@ router.post('/auth', authMiddleware, async (req, res) => {
             keyVersion: user.untisSecretKeyVersion ?? 1,
         });
 
-        // Force explicit fallback configuration to prevent SSRF vulnerabilities and spoofing
-        const schoolSlink =
-            process.env.SDUI_DEFAULT_SCHOOL || UNTIS_DEFAULT_SCHOOL;
+        // Keep this server-controlled (no client-provided slink). One school = one slink.
+        const schoolSlink = normalizeSchoolSlink(
+            process.env.SDUI_DEFAULT_SCHOOL ||
+                user.sduiSchoolLink ||
+                UNTIS_DEFAULT_SCHOOL,
+        );
 
-        const client = await SduiClient.authenticateWithWebUntis({
-            username: user.username,
-            password,
-            schoolSlink,
-        });
+        if (!schoolSlink) {
+            return res.status(500).json({
+                error: 'No SDUI school slink configured on server.',
+            });
+        }
+
+        let client: SduiClient;
+        try {
+            client = await SduiClient.authenticateWithWebUntis({
+                username: user.username,
+                password,
+                schoolSlink,
+            });
+        } catch (error: any) {
+            const msg = String(error?.message || error || 'Unknown error');
+            const hasSchoolResolveError = msg
+                .toLowerCase()
+                .includes('unable to resolve identity provider url for school');
+
+            return res.status(401).json({
+                error: hasSchoolResolveError
+                    ? 'Unable to resolve identity provider URL for school. Please configure SDUI_DEFAULT_SCHOOL with the correct SDUI school link.'
+                    : msg || 'SDUI Authentication failed',
+            });
+        }
+
         const me = await client.getCurrentUser<any>();
         // Fallback or reflection hack if access token isn't public API - maybe `client.accessToken`
         const token =

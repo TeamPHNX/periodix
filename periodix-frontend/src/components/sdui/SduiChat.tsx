@@ -10,6 +10,14 @@ type SduiChatItem = any;
 type SduiMessage = any;
 type SduiNews = any;
 
+type SduiAttachment = {
+    url: string;
+    name: string;
+    mime: string;
+    size: number | null;
+    isImage: boolean;
+};
+
 const ACTION_MESSAGE_MAP: Record<string, string> = {
     'news.posted': 'News wurde in dieser Gruppe geteilt.',
     'users.added': 'Nutzer wurden zur Gruppe hinzugefuegt.',
@@ -191,6 +199,321 @@ function extractImageUrls(source: any): string[] {
     return Array.from(urls.values());
 }
 
+function getFileNameFromUrl(url: string): string {
+    try {
+        const parsed = new URL(url, 'https://api.sdui.app');
+        const rawName = parsed.pathname.split('/').pop() || 'Datei';
+        return decodeURIComponent(rawName);
+    } catch {
+        const rawName =
+            url.split('?')[0].split('#')[0].split('/').pop() || 'Datei';
+        try {
+            return decodeURIComponent(rawName);
+        } catch {
+            return rawName;
+        }
+    }
+}
+
+function isImageFile(mime: string, url: string, name: string): boolean {
+    if (mime.toLowerCase().startsWith('image/')) return true;
+    const urlValue = `${url}`.toLowerCase();
+    if (/\.(png|jpe?g|gif|webp|avif|svg)(\?|$)/i.test(urlValue)) return true;
+    return /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(name.trim());
+}
+
+function formatFileSize(bytes: number | null): string {
+    if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isLikelyAttachmentPath(path: string): boolean {
+    return /(^|\.|\[)(attachment|attachments|file|files|upload|uploads|document|documents|chat_attachments?)(\.|\[|$)/i.test(
+        path,
+    );
+}
+
+function isSupportedAttachmentUrl(value: string): boolean {
+    const candidate = value.trim();
+    if (!candidate) return false;
+    if (!/^https?:\/\//i.test(candidate) && !candidate.startsWith('/')) {
+        return false;
+    }
+
+    const lowered = candidate.toLowerCase();
+    if (lowered === '/download' || lowered === 'download') return false;
+    return true;
+}
+
+function hasFilenameExtension(name: string): boolean {
+    return /\.[a-z0-9]{2,8}$/i.test(name.trim());
+}
+
+function isGenericDerivedFileName(name: string): boolean {
+    const normalized = name.trim().toLowerCase();
+    if (!normalized) return true;
+    if (normalized === 'download' || normalized === 'datei') return true;
+    if (/^[0-9]+$/.test(normalized)) return true;
+    if (
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+            normalized,
+        )
+    ) {
+        return true;
+    }
+    return false;
+}
+
+function sanitizeAttachmentName(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const normalized = normalizeMessageText(value).trim();
+    if (!normalized) return null;
+    if (isActionKey(normalized)) return null;
+    if (isGenericDerivedFileName(normalized)) return null;
+    return normalized;
+}
+
+function isUsableAttachmentName(name: string): boolean {
+    return sanitizeAttachmentName(name) !== null;
+}
+
+function isLikelyDownloadUrl(url: string): boolean {
+    const value = url.toLowerCase();
+    return (
+        /\/download\b/.test(value) ||
+        /[?&]download=(true|1)\b/.test(value) ||
+        /[?&]disposition=attachment\b/.test(value)
+    );
+}
+
+function scoreAttachmentUrl(url: string, mime: string): number {
+    let score = 0;
+    const value = url.toLowerCase();
+
+    if (!isLikelyDownloadUrl(value)) score += 3;
+    if (/\.(png|jpe?g|gif|webp|avif|svg)(\?|$)/i.test(value)) score += 2;
+    if (/\/(image|images|media)\//i.test(value)) score += 1;
+    if (mime.toLowerCase().startsWith('image/')) score += 1;
+
+    return score;
+}
+
+function getAttachmentIdentityKey(name: string, size: number | null): string {
+    const normalized = sanitizeAttachmentName(name);
+    if (!normalized) return '';
+    if (!hasFilenameExtension(normalized)) return '';
+    return `${normalized.toLowerCase()}|${size ?? 'na'}`;
+}
+
+function pickBetterAttachmentName(current: string, incoming: string): string {
+    const currentUsable = isUsableAttachmentName(current);
+    const incomingUsable = isUsableAttachmentName(incoming);
+
+    if (incomingUsable && !currentUsable) return incoming;
+    if (currentUsable && !incomingUsable) return current;
+    if (incomingUsable && currentUsable) {
+        if (!hasFilenameExtension(current) && hasFilenameExtension(incoming)) {
+            return incoming;
+        }
+        if (incoming.length > current.length) return incoming;
+    }
+    return current;
+}
+
+function getMessageFilenameHint(source: any): string | null {
+    const candidates = [source?.content, source?.text, source?.message];
+    for (const value of candidates) {
+        if (typeof value !== 'string') continue;
+        const normalized = normalizeMessageText(value).trim();
+        if (!normalized) continue;
+        if (normalized.length > 200) continue;
+        if (/[\n\r]/.test(normalized)) continue;
+        if (hasFilenameExtension(normalized)) return normalized;
+    }
+    return null;
+}
+
+function extractMessageAttachments(source: any): SduiAttachment[] {
+    const bucket = new Map<string, SduiAttachment>();
+    const identityToFingerprint = new Map<string, string>();
+    const messageFilenameHint = getMessageFilenameHint(source);
+
+    const addAttachment = (node: any, hintKey = '') => {
+        if (!node || typeof node !== 'object') return;
+
+        const keyHint = String(hintKey || '').toLowerCase();
+        const attachmentPathHint = isLikelyAttachmentPath(keyHint);
+
+        const urlCandidate = [
+            node?.url,
+            node?.download_url,
+            node?.downloadUrl,
+            node?.file_url,
+            node?.fileUrl,
+            node?.src,
+            node?.uri,
+        ].find((value) => typeof value === 'string' && value.trim());
+
+        if (!urlCandidate) return;
+        if (!isSupportedAttachmentUrl(String(urlCandidate))) return;
+
+        const url = normalizeImageUrl(String(urlCandidate).trim());
+        if (!url) return;
+
+        const mime = String(
+            node?.mime || node?.mimetype || node?.content_type || '',
+        ).trim();
+
+        const contextualNameCandidates = attachmentPathHint
+            ? [node?.title, node?.meta?.title, node?.meta?.displayname]
+            : [];
+
+        const explicitNameCandidate = [
+            node?.name,
+            node?.filename,
+            node?.file_name,
+            node?.original_name,
+            node?.originalName,
+            ...contextualNameCandidates,
+        ]
+            .map(sanitizeAttachmentName)
+            .find((value) => Boolean(value));
+
+        const metadataNameCandidate = [
+            node?.meta?.filename,
+            node?.meta?.file_name,
+            node?.meta?.original_name,
+            node?.meta?.originalName,
+            messageFilenameHint,
+        ]
+            .map(sanitizeAttachmentName)
+            .find((value) => Boolean(value));
+
+        const fallbackNameFromUrl = getFileNameFromUrl(url);
+        const safeNameFromUrl =
+            sanitizeAttachmentName(fallbackNameFromUrl) || fallbackNameFromUrl;
+
+        const name =
+            explicitNameCandidate || metadataNameCandidate || safeNameFromUrl;
+
+        const rawSize =
+            node?.size ?? node?.filesize ?? node?.file_size ?? node?.byte_size;
+        const parsedSize =
+            typeof rawSize === 'number'
+                ? rawSize
+                : Number.parseInt(String(rawSize ?? ''), 10);
+        const size = Number.isFinite(parsedSize) ? parsedSize : null;
+
+        const typeHint = String(
+            node?.type || node?.kind || node?.resource_type || '',
+        ).toLowerCase();
+        const hasAttachmentTypeHint = /(file|attachment|upload|document)/i.test(
+            typeHint,
+        );
+        const hasExplicitName = Boolean(explicitNameCandidate);
+        const hasMime = mime.length > 0;
+        const hasFileSize = size !== null;
+
+        const isClearlyAttachment =
+            attachmentPathHint || hasAttachmentTypeHint || hasExplicitName;
+        if (!isClearlyAttachment) return;
+
+        const hasStrongFileIdentity =
+            hasExplicitName ||
+            hasMime ||
+            hasFileSize ||
+            hasFilenameExtension(name) ||
+            hasFilenameExtension(fallbackNameFromUrl);
+        if (!hasStrongFileIdentity) return;
+
+        if (!hasExplicitName && isGenericDerivedFileName(name)) {
+            return;
+        }
+
+        const attachment: SduiAttachment = {
+            url,
+            name,
+            mime,
+            size,
+            isImage: isImageFile(mime, url, name),
+        };
+
+        const fingerprint = getImageFingerprint(url);
+        const identityKey = getAttachmentIdentityKey(name, size);
+        const mappedFingerprint = identityKey
+            ? identityToFingerprint.get(identityKey)
+            : undefined;
+        const dedupeKey = mappedFingerprint || fingerprint;
+
+        const existing = bucket.get(dedupeKey);
+        if (!existing) {
+            bucket.set(dedupeKey, attachment);
+            if (identityKey) {
+                identityToFingerprint.set(identityKey, dedupeKey);
+            }
+            return;
+        }
+
+        const existingScore = scoreAttachmentUrl(existing.url, existing.mime);
+        const incomingScore = scoreAttachmentUrl(
+            attachment.url,
+            attachment.mime,
+        );
+        const preferredUrl =
+            incomingScore > existingScore ? attachment.url : existing.url;
+
+        bucket.set(dedupeKey, {
+            ...existing,
+            url: preferredUrl,
+            name: pickBetterAttachmentName(existing.name, attachment.name),
+            mime: existing.mime || attachment.mime,
+            size: existing.size ?? attachment.size,
+            isImage: existing.isImage || attachment.isImage,
+        });
+
+        if (identityKey) {
+            identityToFingerprint.set(identityKey, dedupeKey);
+        }
+    };
+
+    if (typeof source?.file === 'string' && source.file.trim()) {
+        addAttachment(
+            {
+                url: source.file,
+                name: source?.file_name || source?.filename,
+                mime: source?.mime || source?.mimetype,
+            },
+            'file',
+        );
+    }
+
+    const walk = (node: any, path = 'root', depth = 0) => {
+        if (!node || depth > 7) return;
+
+        if (Array.isArray(node)) {
+            for (const [index, item] of node.entries()) {
+                walk(item, `${path}[${index}]`, depth + 1);
+            }
+            return;
+        }
+
+        if (typeof node !== 'object') return;
+
+        addAttachment(node, path);
+
+        for (const [key, value] of Object.entries(node)) {
+            if (value && typeof value === 'object') {
+                walk(value, `${path}.${key}`, depth + 1);
+            }
+        }
+    };
+
+    walk(source);
+    return Array.from(bucket.values());
+}
+
 function getChatName(chat: SduiChatItem): string {
     if (chat?.meta?.displayname) return chat.meta.displayname;
     if (chat?.name === 'channels.conversation.name') return 'Privater Chat';
@@ -312,13 +635,7 @@ function getMessageText(
     message: SduiMessage,
     linkedNews: SduiNews | null,
 ): string {
-    const rendered = normalizeMessageText(message?.content_rendered);
-    if (rendered) return rendered;
-
-    const actionKey =
-        typeof message?.content === 'string' ? message.content.trim() : '';
-
-    if (isActionKey(actionKey)) {
+    const formatActionMessage = (actionKey: string): string => {
         if (actionKey === 'news.posted' && linkedNews) {
             const newsBody = getNewsBody(linkedNews);
             if (newsBody) return newsBody;
@@ -334,6 +651,21 @@ function getMessageText(
             .join(' - ');
 
         return `Systemaktion: ${humanized}`;
+    };
+
+    const rendered = normalizeMessageText(message?.content_rendered);
+    if (rendered) {
+        if (isActionKey(rendered)) {
+            return formatActionMessage(rendered);
+        }
+        return rendered;
+    }
+
+    const actionKey =
+        typeof message?.content === 'string' ? message.content.trim() : '';
+
+    if (isActionKey(actionKey)) {
+        return formatActionMessage(actionKey);
     }
 
     const text = normalizeMessageText(
@@ -1189,7 +1521,9 @@ export function SduiChat() {
         return (
             <div className="max-w-md mx-auto p-6 mt-8 bg-white dark:bg-slate-900 rounded-xl shadow-md border border-slate-100 dark:border-slate-800">
                 <div className="mb-6">
-                    <h2 className="text-xl font-semibold mb-2">Connect SDUI</h2>
+                    <h2 className="text-xl font-semibold mb-2 text-slate-900 dark:text-slate-100">
+                        Connect SDUI
+                    </h2>
                     <p className="text-sm text-slate-500 dark:text-slate-400">
                         Your WebUntis credentials will be securely used to
                         auto-authenticate with SDUI.
@@ -1223,10 +1557,6 @@ export function SduiChat() {
                     border-r border-slate-200 dark:border-slate-800
                 `}
             >
-                <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800">
-                    <h1 className="text-lg font-bold">SDUI Chats</h1>
-                </div>
-
                 <div className="flex-1 overflow-y-auto p-2 space-y-2">
                     {errorMsg && (
                         <div className="rounded-md border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-sm">
@@ -1352,14 +1682,31 @@ export function SduiChat() {
                                     );
                                     const newsTitle = getNewsTitle(linkedNews);
                                     const newsBody = getNewsBody(linkedNews);
-                                    const newsImages = extractImageUrls(
-                                        linkedNews || message,
-                                    );
+                                    const newsImages = extractImageUrls([
+                                        linkedNews,
+                                        message,
+                                    ]);
                                     const visibleNewsImages = newsImages.filter(
                                         (src) => !hiddenImageUrls[src],
                                     );
                                     const singleNewsImage =
                                         visibleNewsImages.length === 1;
+                                    const messageAttachments =
+                                        extractMessageAttachments(message);
+                                    const visibleImageAttachments =
+                                        messageAttachments.filter(
+                                            (attachment) =>
+                                                attachment.isImage &&
+                                                !hiddenImageUrls[
+                                                    attachment.url
+                                                ],
+                                        );
+                                    const fileAttachments =
+                                        messageAttachments.filter(
+                                            (attachment) => !attachment.isImage,
+                                        );
+                                    const singleAttachmentImage =
+                                        visibleImageAttachments.length === 1;
 
                                     return (
                                         <div
@@ -1394,6 +1741,131 @@ export function SduiChat() {
                                             >
                                                 {messageText}
                                             </div>
+
+                                            {visibleImageAttachments.length >
+                                                0 && (
+                                                <div
+                                                    className={`mt-2 ${
+                                                        singleAttachmentImage
+                                                            ? ''
+                                                            : 'grid grid-cols-1 sm:grid-cols-2 gap-2'
+                                                    }`}
+                                                >
+                                                    {visibleImageAttachments.map(
+                                                        (attachment) => (
+                                                            <div
+                                                                key={`${getMessageKey(message)}-${attachment.url}`}
+                                                                className={`rounded-md overflow-hidden border border-slate-200/80 dark:border-slate-700/70 bg-slate-50 dark:bg-slate-900/50 ${
+                                                                    singleAttachmentImage
+                                                                        ? 'w-full'
+                                                                        : ''
+                                                                }`}
+                                                            >
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() =>
+                                                                        setLightboxImageUrl(
+                                                                            attachment.url,
+                                                                        )
+                                                                    }
+                                                                    className="block w-full"
+                                                                >
+                                                                    <img
+                                                                        src={
+                                                                            attachment.url
+                                                                        }
+                                                                        alt={
+                                                                            attachment.name
+                                                                        }
+                                                                        loading="lazy"
+                                                                        className={`w-full bg-slate-100 dark:bg-slate-800 ${
+                                                                            singleAttachmentImage
+                                                                                ? 'h-auto max-h-112 object-contain'
+                                                                                : 'h-36 object-cover'
+                                                                        }`}
+                                                                        onError={() => {
+                                                                            setHiddenImageUrls(
+                                                                                (
+                                                                                    prev,
+                                                                                ) => {
+                                                                                    if (
+                                                                                        prev[
+                                                                                            attachment
+                                                                                                .url
+                                                                                        ]
+                                                                                    ) {
+                                                                                        return prev;
+                                                                                    }
+                                                                                    return {
+                                                                                        ...prev,
+                                                                                        [attachment.url]: true,
+                                                                                    };
+                                                                                },
+                                                                            );
+                                                                        }}
+                                                                    />
+                                                                </button>
+                                                                <a
+                                                                    href={
+                                                                        attachment.url
+                                                                    }
+                                                                    target="_blank"
+                                                                    rel="noreferrer"
+                                                                    download={
+                                                                        attachment.name
+                                                                    }
+                                                                    className="block px-2 py-1 text-xs text-blue-700 dark:text-blue-300 hover:underline truncate"
+                                                                    title={
+                                                                        attachment.name
+                                                                    }
+                                                                >
+                                                                    {
+                                                                        attachment.name
+                                                                    }
+                                                                </a>
+                                                            </div>
+                                                        ),
+                                                    )}
+                                                </div>
+                                            )}
+
+                                            {fileAttachments.length > 0 && (
+                                                <div className="mt-2 space-y-1">
+                                                    {fileAttachments.map(
+                                                        (attachment) => (
+                                                            <a
+                                                                key={`${getMessageKey(message)}-${attachment.url}`}
+                                                                href={
+                                                                    attachment.url
+                                                                }
+                                                                target="_blank"
+                                                                rel="noreferrer"
+                                                                download={
+                                                                    attachment.name
+                                                                }
+                                                                className="flex items-center justify-between gap-2 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 px-2 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                                            >
+                                                                <span
+                                                                    className="text-xs text-slate-700 dark:text-slate-200 truncate"
+                                                                    title={
+                                                                        attachment.name
+                                                                    }
+                                                                >
+                                                                    {
+                                                                        attachment.name
+                                                                    }
+                                                                </span>
+                                                                <span className="text-[10px] text-slate-500 dark:text-slate-400 shrink-0">
+                                                                    {formatFileSize(
+                                                                        attachment.size,
+                                                                    ) ||
+                                                                        'Download'}
+                                                                </span>
+                                                            </a>
+                                                        ),
+                                                    )}
+                                                </div>
+                                            )}
 
                                             {actionKey === 'news.posted' &&
                                                 (newsTitle ||
