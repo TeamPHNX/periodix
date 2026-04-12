@@ -13,6 +13,7 @@ import sharingRoutes from './routes/sharing.js';
 import accessRequestRoutes from './routes/accessRequest.js';
 import notificationRoutes from './routes/notifications.js';
 import analyticsRoutes from './routes/analytics.js';
+import sduiRoutes from './routes/sdui.js';
 
 dotenv.config();
 
@@ -24,7 +25,7 @@ app.use(
     helmet({
         crossOriginResourcePolicy: { policy: 'cross-origin' },
         contentSecurityPolicy: false, // can be enabled/tuned later
-    })
+    }),
 );
 // If running behind a proxy (Docker, reverse proxy), enable to get correct client IPs
 app.set('trust proxy', 1);
@@ -146,5 +147,6 @@ app.use('/api/sharing', sharingRoutes);
 app.use('/api/access-request', accessRequestRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/sdui', sduiRoutes);
 
 export default app;
