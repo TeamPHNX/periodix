@@ -12,6 +12,7 @@ import type {
     Holiday,
     TimetableResponse,
     AbsenceResponse,
+    AggregatedResourcesResponse,
 } from './types';
 
 // Global logout handler - will be set by App.tsx
@@ -994,4 +995,10 @@ export async function getAbsentLessons(
     const query = params.toString();
     const url = `/api/timetable/absences${query ? `?${query}` : ''}`;
     return api<AbsenceResponse>(url, { token });
+}
+
+export async function getAggregatedResources(
+    token: string
+): Promise<AggregatedResourcesResponse> {
+    return api<AggregatedResourcesResponse>('/api/resources/overview', { token });
 }

@@ -8,7 +8,6 @@ import {
     Suspense,
 } from 'react';
 import Timetable from '../components/Timetable';
-import MoonIcon from '../components/MoonIcon';
 import NotificationBell from '../components/NotificationBell';
 
 // Lazy load heavy components that aren't needed for initial render
@@ -16,6 +15,7 @@ const SettingsModal = lazy(() => import('../components/SettingsModal'));
 const NotificationPanel = lazy(() => import('../components/NotificationPanel'));
 const OnboardingModal = lazy(() => import('../components/OnboardingModal'));
 const AbsencePanel = lazy(() => import('../components/AbsencePanel'));
+const ResourceManager = lazy(() => import('./ResourceManager'));
 
 import {
     API_BASE,
@@ -49,6 +49,14 @@ import {
     startOfWeek,
     getISOWeekNumber,
 } from '../utils/dates';
+import {
+    LayoutGrid,
+    Settings,
+    Calendar,
+    Sun,
+    Moon,
+    LogOut,
+} from 'lucide-react';
 import { useTimetableCache } from '../hooks/useTimetableCache';
 import type {
     TimetableResponse,
@@ -251,6 +259,7 @@ export default function Dashboard({
     // Onboarding state
     const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
     const [isLessonModalOpen, setIsLessonModalOpen] = useState(false);
+    const [isResourceManagerOpen, setIsResourceManagerOpen] = useState(false);
 
     const loadAbsences = useCallback(
         async (rangeOverride?: DateRange) => {
@@ -787,6 +796,7 @@ export default function Dashboard({
     }, [token]);
 
     const handleViewMyClass = useCallback(() => {
+        setIsResourceManagerOpen(false);
         if (!primaryClass) {
             setLoadError('No class is linked to your account yet.');
             return;
@@ -1428,9 +1438,9 @@ export default function Dashboard({
                             isOpen={isNotificationPanelOpen}
                         />
                         {/* Hamburger menu */}
-                        <div className="relative z-100" ref={menuRef}>
+                        <div className="relative" ref={menuRef}>
                             <button
-                                className={`rounded-full p-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors ${
+                                className={`rounded-full p-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors z-50 relative ${
                                     isMenuOpen
                                         ? 'bg-slate-200 dark:bg-slate-700'
                                         : ''
@@ -1440,161 +1450,113 @@ export default function Dashboard({
                                 aria-label="Open menu"
                                 aria-expanded={isMenuOpen}
                             >
-                                <svg
-                                    className="h-5 w-5 text-slate-600 dark:text-slate-300 transition-transform duration-200"
-                                    style={{
-                                        transform: isMenuOpen
-                                            ? 'rotate(90deg)'
-                                            : 'rotate(0deg)',
-                                    }}
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="2"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                >
-                                    <line x1="3" y1="6" x2="21" y2="6" />
-                                    <line x1="3" y1="12" x2="21" y2="12" />
-                                    <line x1="3" y1="18" x2="21" y2="18" />
-                                </svg>
+                                {isMenuOpen ? (
+                                    <svg className="h-5 w-5 text-slate-600 dark:text-slate-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                                ) : (
+                                    <LayoutGrid className="h-5 w-5 text-slate-600 dark:text-slate-300" />
+                                )}
                             </button>
-                            {/* Dropdown menu */}
+
+                            {/* Mobile backdrop */}
+                            {isMenuOpen && (
+                                <div 
+                                    className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm sm:hidden z-40 transition-opacity"
+                                    onClick={() => setIsMenuOpen(false)}
+                                />
+                            )}
+
+                            {/* Menu content */}
                             <div
-                                className={`absolute right-0 mt-2 w-48 rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-800 overflow-hidden transition-all duration-200 ease-out origin-top-right z-50 ${
+                                className={`fixed sm:absolute inset-0 sm:inset-auto sm:right-0 sm:mt-2 sm:w-64 sm:rounded-xl bg-white dark:bg-slate-800 shadow-2xl sm:shadow-lg sm:border border-slate-200 dark:border-slate-700 overflow-hidden transition-all duration-300 ease-in-out origin-top-right z-50 ${
                                     isMenuOpen
-                                        ? 'opacity-100 scale-100 translate-y-0'
-                                        : 'opacity-0 scale-95 -translate-y-2 pointer-events-none'
+                                        ? 'opacity-100 scale-100 pointer-events-auto'
+                                        : 'opacity-0 scale-95 sm:scale-100 sm:-translate-y-2 pointer-events-none'
                                 }`}
                             >
-                                <div className="py-1">
-                                    {/* Settings */}
-                                    <button
-                                        className="w-full flex items-center gap-3 px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                                        onClick={() => {
-                                            setIsMenuOpen(false);
-                                            setIsSettingsModalOpen(true);
-                                            trackActivity(
-                                                token,
-                                                'settings',
-                                            ).catch(console.error);
-                                        }}
-                                    >
-                                        <svg
-                                            width="18"
-                                            height="18"
-                                            viewBox="0 0 24 24"
-                                            fill="none"
-                                            className="text-slate-500 dark:text-slate-400"
+                                <div className="flex flex-col h-full">
+                                    {/* Mobile Header */}
+                                    <div className="flex sm:hidden items-center justify-between p-6 bg-slate-50 dark:bg-slate-900/50 border-b dark:border-slate-700">
+                                        <div>
+                                            <div className="font-bold text-xl dark:text-white">Menu</div>
+                                            <div className="text-sm text-slate-500">{user.username}</div>
+                                        </div>
+                                        <button 
+                                            onClick={() => setIsMenuOpen(false)}
+                                            className="p-2 rounded-full hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500"
                                         >
-                                            <path
-                                                d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
-                                                stroke="currentColor"
-                                                strokeWidth="2"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                            />
-                                            <circle
-                                                cx="12"
-                                                cy="12"
-                                                r="3"
-                                                stroke="currentColor"
-                                                strokeWidth="2"
-                                            />
-                                        </svg>
-                                        Settings
-                                    </button>
-                                    {/* Absences */}
-                                    <button
-                                        className="w-full flex items-center gap-3 px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                                        onClick={() => {
-                                            setIsMenuOpen(false);
-                                            setIsAbsencePanelOpen(
-                                                !isAbsencePanelOpen,
-                                            );
-                                        }}
-                                    >
-                                        <svg
-                                            width="18"
-                                            height="18"
-                                            viewBox="0 0 24 24"
-                                            fill="none"
-                                            stroke="currentColor"
-                                            strokeWidth="1.8"
-                                            className="text-slate-500 dark:text-slate-400"
-                                        >
-                                            <rect
-                                                x="3"
-                                                y="4"
-                                                width="18"
-                                                height="16"
-                                                rx="2"
-                                            />
-                                            <path d="M3 9h18" />
-                                            <path d="M8 2v4" />
-                                            <path d="M16 2v4" />
-                                            <path d="M8 14h8" />
-                                        </svg>
-                                        Absences
-                                    </button>
-                                    {/* Dark mode toggle */}
-                                    <button
-                                        className="w-full flex items-center gap-3 px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                                        onClick={() => {
-                                            setDark(!dark);
-                                            setIsMenuOpen(false);
-                                        }}
-                                    >
-                                        {dark ? (
-                                            <svg
-                                                xmlns="http://www.w3.org/2000/svg"
-                                                viewBox="0 0 24 24"
-                                                fill="currentColor"
-                                                className="h-[18px] w-[18px] text-amber-500"
-                                            >
-                                                <path d="M12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z" />
-                                                <path
-                                                    fillRule="evenodd"
-                                                    d="M12 2.25a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V3a.75.75 0 0 1 .75-.75Zm0 16.5a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0V19.5a.75.75 0 0 1 .75-.75Zm9-6a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5H20.25a.75.75 0 0 1 .75.75Zm-16.5 0a.75.75 0 0 1-.75.75H2.25a.75.75 0 0 1 0-1.5H3.75a.75.75 0 0 1 .75.75ZM18.53 5.47a.75.75 0 0 1 0 1.06l-1.06 1.06a.75.75 0 0 1-1.061-1.06l1.06-1.06a.75.75 0 0 1 1.06 0ZM7.59 16.41a.75.75 0 0 1 0 1.061L6.53 18.53a.75.75 0 1 1-1.06-1.061l1.06-1.06a.75.75 0 0 1 1.06 0ZM18.53 18.53a.75.75 0 0 1-1.06 0l-1.06-1.06a.75.75 0 0 1 1.06-1.061l1.06 1.06c.293.293.293.768 0 1.061ZM7.59 7.59A.75.75 0 0 1 6.53 6.53L5.47 5.47a.75.75 0 1 1 1.06-1.06l1.06 1.06c.293.293.293.768 0 1.061Z"
-                                                    clipRule="evenodd"
-                                                />
-                                            </svg>
-                                        ) : (
-                                            <MoonIcon className="h-[18px] w-[18px] text-indigo-500" />
+                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                                        </button>
+                                    </div>
+
+                                    <div className="p-2 sm:py-1 space-y-1 flex-1 overflow-y-auto">
+                                        {(user.isUserManager || user.isAdmin) && (
+                                            <div className="mb-2 sm:mb-1 px-2 pt-2 pb-1 sm:p-0">
+                                                <div className="px-2 pb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 sm:hidden">Admin</div>
+                                                <button
+                                                    className="w-full flex items-center gap-3 px-4 py-4 sm:py-2.5 text-left text-base sm:text-sm font-medium sm:font-normal rounded-lg text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-colors"
+                                                    onClick={() => {
+                                                        setIsMenuOpen(false);
+                                                        setIsResourceManagerOpen(true);
+                                                    }}
+                                                >
+                                                    <LayoutGrid className="w-5 h-5 sm:w-4 sm:h-4" />
+                                                    Resource Manager
+                                                </button>
+                                            </div>
                                         )}
-                                        {dark ? 'Light mode' : 'Dark mode'}
-                                    </button>
-                                    {/* Divider */}
-                                    <div className="my-1 border-t border-slate-200 dark:border-slate-700" />
-                                    {/* Logout */}
-                                    <button
-                                        className="w-full flex items-center gap-3 px-4 py-3 text-left text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-                                        onClick={() => {
-                                            setIsMenuOpen(false);
-                                            onLogout();
-                                        }}
-                                    >
-                                        <svg
-                                            xmlns="http://www.w3.org/2000/svg"
-                                            viewBox="0 0 24 24"
-                                            fill="none"
-                                            stroke="currentColor"
-                                            strokeWidth="2"
-                                            className="h-[18px] w-[18px]"
+
+                                        <div className="px-2 pb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 sm:hidden">Settings</div>
+                                        <button
+                                            className="w-full flex items-center gap-3 px-4 py-4 sm:py-2.5 text-left text-base sm:text-sm text-slate-700 dark:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                                            onClick={() => {
+                                                setIsMenuOpen(false);
+                                                setIsSettingsModalOpen(true);
+                                                trackActivity(token, 'settings').catch(console.error);
+                                            }}
                                         >
-                                            <path
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                                d="M15 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3"
-                                            />
-                                            <path
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                                d="M10 17l5-5-5-5M15 12H3"
-                                            />
-                                        </svg>
-                                        Log out
-                                    </button>
+                                            <Settings className="w-5 h-5 sm:w-4 sm:h-4 text-slate-500 dark:text-slate-400" />
+                                            Settings
+                                        </button>
+
+                                        <button
+                                            className="w-full flex items-center gap-3 px-4 py-4 sm:py-2.5 text-left text-base sm:text-sm text-slate-700 dark:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                                            onClick={() => {
+                                                setIsMenuOpen(false);
+                                                setIsAbsencePanelOpen(!isAbsencePanelOpen);
+                                            }}
+                                        >
+                                            <Calendar className="w-5 h-5 sm:w-4 sm:h-4 text-slate-500 dark:text-slate-400" />
+                                            Absences
+                                        </button>
+
+                                        <button
+                                            className="w-full flex items-center gap-3 px-4 py-4 sm:py-2.5 text-left text-base sm:text-sm text-slate-700 dark:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                                            onClick={() => {
+                                                setDark(!dark);
+                                                setIsMenuOpen(false);
+                                            }}
+                                        >
+                                            {dark ? (
+                                                <Sun className="w-5 h-5 sm:w-4 sm:h-4 text-amber-500" />
+                                            ) : (
+                                                <Moon className="w-5 h-5 sm:w-4 sm:h-4 text-indigo-500" />
+                                            )}
+                                            {dark ? 'Light Mode' : 'Dark Mode'}
+                                        </button>
+
+                                        <div className="pt-2 mt-2 border-t dark:border-slate-700">
+                                            <button
+                                                className="w-full flex items-center gap-3 px-4 py-4 sm:py-2.5 text-left text-base sm:text-sm text-rose-600 dark:text-rose-400 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-colors"
+                                                onClick={() => {
+                                                    setIsMenuOpen(false);
+                                                    onLogout();
+                                                }}
+                                            >
+                                                <LogOut className="w-5 h-5 sm:w-4 sm:h-4" />
+                                                Logout
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1813,6 +1775,7 @@ export default function Dashboard({
                                         title="My timetable"
                                         aria-label="Load my timetable"
                                         onClick={() => {
+                                            setIsResourceManagerOpen(false);
                                             setSelectedUser(null);
                                             setSelectedClass(null);
                                             setQueryText('');
@@ -1833,6 +1796,42 @@ export default function Dashboard({
                                         </svg>
                                     </button>
                                 </div>
+                                {(user.isUserManager || user.isAdmin) && (
+                                    <div className="hidden sm:flex pb-[2px]">
+                                        <button
+                                            className={`rounded-full p-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all ${
+                                                isResourceManagerOpen
+                                                    ? 'bg-slate-200 dark:bg-slate-700 text-sky-600 dark:text-sky-400 shadow-[0_0_10px_rgba(14,165,233,0.5)] dark:shadow-[0_0_10px_rgba(56,189,248,0.4)]'
+                                                    : 'text-slate-600 dark:text-slate-300'
+                                            }`}
+                                            title="Resource Manager"
+                                            aria-label="Open Resource Manager"
+                                            onClick={() => {
+                                                setIsResourceManagerOpen(true);
+                                            }}
+                                        >
+                                            <svg
+                                                xmlns="http://www.w3.org/2000/svg"
+                                                width="20"
+                                                height="20"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                strokeWidth="2"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                            >
+                                                <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" />
+                                                <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" />
+                                                <path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2" />
+                                                <path d="M10 6h4" />
+                                                <path d="M10 10h4" />
+                                                <path d="M10 14h4" />
+                                                <path d="M10 18h4" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                             {/* Mobile icon cluster */}
                             <div className="flex items-end gap-2 sm:hidden ml-2">
@@ -2020,6 +2019,11 @@ export default function Dashboard({
                             </div>
                         )}
 
+                        {isResourceManagerOpen ? (
+                             <Suspense fallback={<div className="p-8 flex justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>}>
+                                <ResourceManager token={token} user={user} />
+                            </Suspense>
+                        ) : (
                         <Timetable
                             data={mine}
                             holidays={holidays}
@@ -2038,6 +2042,7 @@ export default function Dashboard({
                             isRateLimited={retrySeconds !== null}
                             isClassView={!!selectedClass}
                         />
+                        )}
                     </div>
                 </section>
             </main>

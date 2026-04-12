@@ -52,6 +52,35 @@ export type Lesson = {
     exams?: Exam[]; // Associated exams
 };
 
+export type ResourceLesson = {
+    date: number;
+    startTime: number;
+    endTime: number;
+    classes: string[];
+    subjects: string[];
+    teachers: string[];
+    rooms: string[];
+    code?: string;
+    info?: string;
+};
+
+export type TeacherResource = {
+    id: string; // the shortname (e.g. "ABC")
+    name: string; // longname if available
+    lessons: ResourceLesson[];
+};
+
+export type RoomResource = {
+    id: string; // room name
+    name: string;
+    lessons: ResourceLesson[];
+};
+
+export type AggregatedResourcesResponse = {
+    teachers: TeacherResource[];
+    rooms: RoomResource[];
+};
+
 export type Homework = {
     id: number;
     lessonId: number;

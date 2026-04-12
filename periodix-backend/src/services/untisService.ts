@@ -42,6 +42,12 @@ const allClassesCache = new Map<
 >();
 const ALL_CLASSES_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
+const allTeachersCache = new Map<
+    string,
+    { data: any[]; timestamp: number }
+>();
+const ALL_TEACHERS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
 const ABSENCE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_ABSENCE_RANGE_DAYS = 0; // 0 disables auto-clamping to support full-school-year / all-time queries
 
@@ -1936,6 +1942,57 @@ export async function getUserClasses(userId: string): Promise<
             502,
             'UNTIS_FETCH_FAILED',
         );
+    }
+}
+
+/**
+ * Fetch all teachers from Untis (global list)
+ */
+export async function getAllTeachersFromUntis(requesterId: string): Promise<any[]> {
+    const cached = allTeachersCache.get('global');
+    if (cached && Date.now() - cached.timestamp < ALL_TEACHERS_CACHE_TTL) {
+        return cached.data;
+    }
+
+    const requester: any = await (prisma as any).user.findUnique({
+        where: { id: requesterId },
+        select: {
+            id: true,
+            username: true,
+            untisSecretCiphertext: true,
+            untisSecretNonce: true,
+            untisSecretKeyVersion: true,
+        },
+    });
+    if (!requester) throw new Error('Requester not found');
+
+    const untisPassword = await decryptSecret({
+        ciphertext: requester.untisSecretCiphertext,
+        nonce: requester.untisSecretNonce,
+        keyVersion: requester.untisSecretKeyVersion,
+    });
+
+    const untis = new WebUntis(
+        UNTIS_DEFAULT_SCHOOL,
+        requester.username,
+        untisPassword,
+        UNTIS_HOST,
+    ) as any;
+
+    try {
+        await untis.login();
+        const teachers = await untis.getTeachers();
+        try {
+            await untis.logout?.();
+        } catch {}
+        allTeachersCache.set('global', { data: teachers, timestamp: Date.now() });
+        return teachers;
+    } catch (e: any) {
+        try {
+            await untis.logout?.();
+        } catch {}
+        console.error('[untis] Failed to fetch teachers list', e);
+        return [];
     }
 }
 
