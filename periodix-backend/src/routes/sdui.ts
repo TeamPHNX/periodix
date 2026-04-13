@@ -14,6 +14,12 @@ function normalizeSchoolSlink(input: string): string {
         .toLowerCase();
 }
 
+function getSinglePathParam(
+    param: string | string[] | undefined,
+): string | undefined {
+    return Array.isArray(param) ? param[0] : param;
+}
+
 router.get('/chats', authMiddleware, async (req, res) => {
     try {
         if (!req.user?.id)
@@ -168,7 +174,7 @@ router.get('/chats/:chatId/messages', authMiddleware, async (req, res) => {
     try {
         if (!req.user?.id)
             return res.status(401).json({ error: 'Unauthorized' });
-        const chatId = req.params.chatId;
+        const chatId = getSinglePathParam(req.params.chatId);
         if (!chatId) return res.status(400).json({ error: 'Missing chatId' });
         const page = Number.parseInt(String(req.query.page ?? '1'), 10);
 
@@ -202,7 +208,7 @@ router.get('/chats/:chatId', authMiddleware, async (req, res) => {
         if (!req.user?.id)
             return res.status(401).json({ error: 'Unauthorized' });
 
-        const chatId = req.params.chatId;
+        const chatId = getSinglePathParam(req.params.chatId);
         if (!chatId) return res.status(400).json({ error: 'Missing chatId' });
 
         const user = await prisma.user.findUnique({
@@ -264,7 +270,7 @@ router.post('/chats/:chatId/messages', authMiddleware, async (req, res) => {
     try {
         if (!req.user?.id)
             return res.status(401).json({ error: 'Unauthorized' });
-        const chatId = req.params.chatId;
+        const chatId = getSinglePathParam(req.params.chatId);
         if (!chatId) return res.status(400).json({ error: 'Missing chatId' });
 
         const user = await prisma.user.findUnique({
@@ -303,8 +309,8 @@ router.post(
             if (!req.user?.id)
                 return res.status(401).json({ error: 'Unauthorized' });
 
-            const chatId = req.params.chatId;
-            const replyUuid = req.params.replyUuid;
+            const chatId = getSinglePathParam(req.params.chatId);
+            const replyUuid = getSinglePathParam(req.params.replyUuid);
             if (!chatId)
                 return res.status(400).json({ error: 'Missing chatId' });
             if (!replyUuid)
@@ -354,8 +360,8 @@ router.delete(
             if (!req.user?.id)
                 return res.status(401).json({ error: 'Unauthorized' });
 
-            const chatId = req.params.chatId;
-            const messageUuid = req.params.messageUuid;
+            const chatId = getSinglePathParam(req.params.chatId);
+            const messageUuid = getSinglePathParam(req.params.messageUuid);
             if (!chatId)
                 return res.status(400).json({ error: 'Missing chatId' });
             if (!messageUuid)
@@ -393,8 +399,8 @@ router.get(
             if (!req.user?.id)
                 return res.status(401).json({ error: 'Unauthorized' });
 
-            const chatId = req.params.chatId;
-            const messageUuid = req.params.messageUuid;
+            const chatId = getSinglePathParam(req.params.chatId);
+            const messageUuid = getSinglePathParam(req.params.messageUuid);
             if (!chatId)
                 return res.status(400).json({ error: 'Missing chatId' });
             if (!messageUuid)
