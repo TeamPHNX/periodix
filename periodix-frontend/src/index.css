@@ -67,7 +67,9 @@ body.scroll-lock {
     background: linear-gradient(135deg, #6366f1, #10b981);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
     opacity: 0.9;
-    transition: opacity 0.15s ease, transform 0.15s ease;
+    transition:
+        opacity 0.15s ease,
+        transform 0.15s ease;
 }
 .custom-scrollbar:hover .custom-scrollbar-thumb {
     opacity: 1;
@@ -112,7 +114,9 @@ html.dark .scroll-area-native {
     border-radius: 999px;
     border: 2px solid transparent; /* creates pill + keeps background visible */
     background-clip: padding-box;
-    transition: background 160ms ease, box-shadow 160ms ease;
+    transition:
+        background 160ms ease,
+        box-shadow 160ms ease;
 }
 html.dark .scroll-area-native::-webkit-scrollbar-thumb {
     background: linear-gradient(
@@ -459,7 +463,8 @@ html.dark .change-highlight-mobile {
     height: var(--slider-track-height);
     border-radius: 999px;
     /* Use two layers: filled gradient (left) + remaining neutral (right) */
-    background: linear-gradient(
+    background:
+        linear-gradient(
                 90deg,
                 #4f46e5 0%,
                 #2563eb 25%,
@@ -474,11 +479,13 @@ html.dark .change-highlight-mobile {
             rgba(255, 255, 255, 0.08)
         );
     position: relative;
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15),
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.15),
         0 0 0 1px rgba(0, 0, 0, 0.4);
 }
 .gradient-slider.dark::-webkit-slider-runnable-track {
-    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.6),
+    box-shadow:
+        inset 0 0 0 1px rgba(0, 0, 0, 0.6),
         0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 .gradient-slider::-webkit-slider-thumb {
@@ -494,9 +501,13 @@ html.dark .change-highlight-mobile {
     );
     border-radius: 50%;
     border: 1px solid rgba(0, 0, 0, 0.35);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 4px rgba(255, 255, 255, 0.4);
+    box-shadow:
+        0 1px 2px rgba(0, 0, 0, 0.4),
+        0 0 0 4px rgba(255, 255, 255, 0.4);
     cursor: pointer;
-    transition: box-shadow 120ms, transform 120ms;
+    transition:
+        box-shadow 120ms,
+        transform 120ms;
 }
 .dark .gradient-slider::-webkit-slider-thumb {
     background: radial-gradient(
@@ -506,15 +517,20 @@ html.dark .change-highlight-mobile {
         #94a3b8 100%
     );
     border: 1px solid rgba(255, 255, 255, 0.25);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.8), 0 0 0 4px rgba(15, 23, 42, 0.6);
+    box-shadow:
+        0 1px 2px rgba(0, 0, 0, 0.8),
+        0 0 0 4px rgba(15, 23, 42, 0.6);
 }
 .gradient-slider::-webkit-slider-thumb:hover {
     transform: scale(1.04);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.45),
+    box-shadow:
+        0 2px 4px rgba(0, 0, 0, 0.45),
         0 0 0 4px rgba(255, 255, 255, 0.55);
 }
 .dark .gradient-slider::-webkit-slider-thumb:hover {
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.85), 0 0 0 4px rgba(15, 23, 42, 0.75);
+    box-shadow:
+        0 2px 4px rgba(0, 0, 0, 0.85),
+        0 0 0 4px rgba(15, 23, 42, 0.75);
 }
 .gradient-slider:active::-webkit-slider-thumb {
     transform: scale(0.98);
@@ -522,7 +538,8 @@ html.dark .change-highlight-mobile {
 .gradient-slider::-moz-range-track {
     height: var(--slider-track-height);
     border-radius: 999px;
-    background: linear-gradient(
+    background:
+        linear-gradient(
                 90deg,
                 #4f46e5 0%,
                 #2563eb 25%,
@@ -536,7 +553,8 @@ html.dark .change-highlight-mobile {
             rgba(255, 255, 255, 0.18),
             rgba(255, 255, 255, 0.08)
         );
-    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15),
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 255, 255, 0.15),
         0 0 0 1px rgba(0, 0, 0, 0.4);
 }
 .gradient-slider::-moz-range-thumb {
@@ -550,9 +568,13 @@ html.dark .change-highlight-mobile {
     );
     border-radius: 50%;
     border: 1px solid rgba(0, 0, 0, 0.35);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 4px rgba(255, 255, 255, 0.4);
+    box-shadow:
+        0 1px 2px rgba(0, 0, 0, 0.4),
+        0 0 0 4px rgba(255, 255, 255, 0.4);
     cursor: pointer;
-    transition: box-shadow 120ms, transform 120ms;
+    transition:
+        box-shadow 120ms,
+        transform 120ms;
 }
 .dark .gradient-slider::-moz-range-thumb {
     background: radial-gradient(
@@ -562,15 +584,20 @@ html.dark .change-highlight-mobile {
         #94a3b8 100%
     );
     border: 1px solid rgba(255, 255, 255, 0.25);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.8), 0 0 0 4px rgba(15, 23, 42, 0.6);
+    box-shadow:
+        0 1px 2px rgba(0, 0, 0, 0.8),
+        0 0 0 4px rgba(15, 23, 42, 0.6);
 }
 .gradient-slider::-moz-range-thumb:hover {
     transform: scale(1.04);
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.45),
+    box-shadow:
+        0 2px 4px rgba(0, 0, 0, 0.45),
         0 0 0 4px rgba(255, 255, 255, 0.55);
 }
 .dark .gradient-slider::-moz-range-thumb:hover {
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.85), 0 0 0 4px rgba(15, 23, 42, 0.75);
+    box-shadow:
+        0 2px 4px rgba(0, 0, 0, 0.85),
+        0 0 0 4px rgba(15, 23, 42, 0.75);
 }
 .gradient-slider:active::-moz-range-thumb {
     transform: scale(0.98);
@@ -607,16 +634,97 @@ html.dark .change-highlight-mobile {
     animation: slide-up 200ms ease-out;
 }
 
+/* SDUI integration animations */
+@keyframes sdui-surface-in {
+    0% {
+        opacity: 0;
+        transform: translateY(16px) scale(0.985);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@keyframes sdui-soft-rise {
+    0% {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes sdui-tab-swap {
+    0% {
+        opacity: 0;
+        transform: translateX(8px) scale(0.995);
+    }
+    100% {
+        opacity: 1;
+        transform: translateX(0) scale(1);
+    }
+}
+
+@keyframes sdui-float-orb {
+    0%,
+    100% {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+        transform: translate3d(12px, -6px, 0) scale(1.05);
+    }
+}
+
+.sdui-animate-shell {
+    animation: sdui-surface-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.sdui-animate-content {
+    animation: sdui-soft-rise 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.sdui-animate-stagger {
+    opacity: 0;
+    animation: sdui-soft-rise 360ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.sdui-animate-tab {
+    animation: sdui-tab-swap 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.sdui-animate-float {
+    animation: sdui-float-orb 8.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sdui-animate-shell,
+    .sdui-animate-content,
+    .sdui-animate-stagger,
+    .sdui-animate-tab,
+    .sdui-animate-float {
+        animation: none;
+        opacity: 1;
+        transform: none;
+    }
+}
+
 /* Onboarding animations */
 @keyframes glow {
     0%,
     100% {
-        box-shadow: 0 0 0 2px rgb(56 189 248), 0 0 0 9999px rgba(0, 0, 0, 0.4),
+        box-shadow:
+            0 0 0 2px rgb(56 189 248),
+            0 0 0 9999px rgba(0, 0, 0, 0.4),
             inset 0 0 0 2px rgba(56, 189, 248, 0.3),
             0 0 20px rgba(56, 189, 248, 0.6);
     }
     50% {
-        box-shadow: 0 0 0 2px rgb(56 189 248), 0 0 0 9999px rgba(0, 0, 0, 0.4),
+        box-shadow:
+            0 0 0 2px rgb(56 189 248),
+            0 0 0 9999px rgba(0, 0, 0, 0.4),
             inset 0 0 0 2px rgba(56, 189, 248, 0.5),
             0 0 30px rgba(56, 189, 248, 0.8);
     }
@@ -625,11 +733,15 @@ html.dark .change-highlight-mobile {
 @keyframes pulse-border {
     0%,
     100% {
-        box-shadow: 0 0 0 2px rgb(56 189 248), 0 0 0 9999px rgba(0, 0, 0, 0.4),
+        box-shadow:
+            0 0 0 2px rgb(56 189 248),
+            0 0 0 9999px rgba(0, 0, 0, 0.4),
             inset 0 0 0 2px rgba(56, 189, 248, 0.3);
     }
     50% {
-        box-shadow: 0 0 0 4px rgb(56 189 248), 0 0 0 9999px rgba(0, 0, 0, 0.4),
+        box-shadow:
+            0 0 0 4px rgb(56 189 248),
+            0 0 0 9999px rgba(0, 0, 0, 0.4),
             inset 0 0 0 2px rgba(56, 189, 248, 0.5);
     }
 }

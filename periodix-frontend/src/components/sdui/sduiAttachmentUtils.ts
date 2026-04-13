@@ -108,6 +108,10 @@ function getImageFingerprint(url: string): string {
     }
 }
 
+export function getImageDedupeKey(url: string): string {
+    return getImageFingerprint(normalizeImageUrl(String(url || '').trim()));
+}
+
 function addImageUrl(bucket: Map<string, string>, candidate: string): void {
     const normalized = normalizeImageUrl(candidate.trim());
     if (!normalized) return;

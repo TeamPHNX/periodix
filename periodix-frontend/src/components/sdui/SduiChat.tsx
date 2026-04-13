@@ -9,1079 +9,57 @@ import React, {
 import { SduiMessageActionsMenu } from './SduiMessageActionsMenu';
 import { SduiDeleteConfirmModal } from './SduiDeleteConfirmModal';
 import { SduiMessageInfoModal } from './SduiMessageInfoModal';
+import { SduiDevPanel } from './SduiDevPanel';
+import { SduiRawJsonBlock, isSduiDeveloperModeEnabled } from './SduiDevTools';
 import {
     extractImageUrls,
+    getImageDedupeKey,
     extractMessageAttachments,
     formatFileSize,
     getAttachmentDisplayName,
     looksLikeAttachmentPathText,
-    type SduiAttachment,
 } from './sduiAttachmentUtils';
 import { renderTextWithLinks } from './sduiLinkText';
+import {
+    canWriteToChat,
+    extractNewsId,
+    getChatName,
+    getChatPreview,
+    getChatTimestamp,
+    getLinkedNews,
+    getMessageChatId,
+    getMessageDateTime,
+    getMessageDeletePermission,
+    getMessageInfoPermission,
+    getMessageKey,
+    getMessageSender,
+    getMessageText,
+    getMessageTime,
+    getMessageTimestamp,
+    getMessageUuid,
+    getNewsAudience,
+    getNewsAuthor,
+    getNewsBody,
+    getNewsDateTime,
+    getNewsItemId,
+    getNewsTimestamp,
+    getNewsTitle,
+    getReaderName,
+    getReplyPreviewForMessage,
+    hasOneWayRestrictionSignal,
+    indexNewsList,
+    isDeletedMessage,
+    isInfoMessage,
+    mergeUniqueMessages,
+    normalizeArrayResponse,
+    normalizeReaderList,
+    normalizeTextForComparison,
+    shouldHideDuplicateAttachmentText,
+} from './sduiChatUtils';
 
 type SduiChatItem = any;
 type SduiMessage = any;
 type SduiNews = any;
-
-const ACTION_MESSAGE_MAP: Record<string, string> = {
-    'news.posted': 'News wurde in dieser Gruppe geteilt.',
-    'users.added': 'Nutzer wurden zur Gruppe hinzugefuegt.',
-    'users.removed': 'Nutzer wurden aus der Gruppe entfernt.',
-    'users.left': 'Ein Nutzer hat die Gruppe verlassen.',
-    'channel.created': 'Gruppe wurde erstellt.',
-    'channel.renamed': 'Gruppenname wurde geaendert.',
-    'channel.avatar.updated': 'Gruppenbild wurde aktualisiert.',
-    'chat.pinned': 'Chat wurde fixiert.',
-    'chat.unpinned': 'Chat wurde entpinnt.',
-};
-
-const ACTION_KEY_PREFIXES = [
-    'news.',
-    'users.',
-    'channel.',
-    'chat.',
-    'message.',
-    'member.',
-    'conversation.',
-];
-
-function normalizeArrayResponse(input: any): any[] {
-    if (Array.isArray(input)) return input;
-    if (Array.isArray(input?.data)) return input.data;
-    return [];
-}
-
-function isActionKey(value: string): boolean {
-    const normalized = value.trim();
-    if (!normalized) return false;
-    if (!/^[a-z_]+(\.[a-z_]+)+$/i.test(normalized)) return false;
-
-    const lowered = normalized.toLowerCase();
-    if (
-        /\.(png|jpe?g|gif|webp|avif|svg|pdf|docx?|xlsx?|pptx?|txt|zip)$/.test(
-            lowered,
-        )
-    ) {
-        return false;
-    }
-
-    if (ACTION_MESSAGE_MAP[lowered]) return true;
-    return ACTION_KEY_PREFIXES.some((prefix) => lowered.startsWith(prefix));
-}
-
-function stripHtml(input: string): string {
-    return input
-        .replace(/<br\s*\/?>/gi, '\n')
-        .replace(/<\/p>\s*<p>/gi, '\n\n')
-        .replace(/<[^>]+>/g, '')
-        .trim();
-}
-
-function normalizeMessageText(raw: unknown): string {
-    if (typeof raw !== 'string') return '';
-    const trimmed = raw.trim();
-    if (!trimmed) return '';
-    if (trimmed.includes('<') && trimmed.includes('>')) {
-        return stripHtml(trimmed);
-    }
-    return trimmed;
-}
-
-function getChatName(chat: SduiChatItem): string {
-    if (chat?.meta?.displayname) return chat.meta.displayname;
-    if (chat?.name === 'channels.conversation.name') return 'Privater Chat';
-    return chat?.name || 'Unbekannter Chat';
-}
-
-function getChatPreview(chat: SduiChatItem): string {
-    const rawPreview =
-        typeof chat?.meta?.description === 'string'
-            ? chat.meta.description
-            : typeof chat?.meta?.last_message === 'string'
-              ? chat.meta.last_message
-              : typeof chat?.description === 'string'
-                ? chat.description
-                : '';
-
-    const normalized = rawPreview.replace(/\s+/g, ' ').trim();
-    if (!normalized) return 'Keine neuen Nachrichten';
-    if (normalized.length > 180) {
-        return `${normalized.slice(0, 177)}...`;
-    }
-
-    return normalized;
-}
-
-function getChatTimestamp(chat: SduiChatItem): string {
-    const raw = chat?.activity_at || chat?.updated_at;
-    if (!raw) return '';
-    const date = new Date(raw);
-    if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleDateString('de-DE');
-}
-
-function getMessageChatId(chat: SduiChatItem): string {
-    return String(chat?.chat?.id ?? chat?.chat_id ?? chat?.id ?? '');
-}
-
-function getMessageUuid(message: SduiMessage): string {
-    return String(message?.uuid ?? message?.id ?? '').trim();
-}
-
-function hasNonEmptyDateValue(value: unknown): boolean {
-    if (typeof value === 'string') return value.trim().length > 0;
-    return Boolean(value);
-}
-
-function isDeletedMessage(message: SduiMessage): boolean {
-    return (
-        hasNonEmptyDateValue(message?.unset_at) ||
-        hasNonEmptyDateValue(message?.deleted_at)
-    );
-}
-
-function getMessageDeletePermission(
-    message: SduiMessage,
-    fallbackWritePermission: boolean,
-): boolean {
-    const explicit = firstBooleanLike([
-        message?.can?.delete,
-        message?.can?.['delete'],
-        message?.can?.remove,
-        message?.can?.['remove'],
-    ]);
-
-    if (explicit !== null) return explicit;
-    return fallbackWritePermission;
-}
-
-function getMessageInfoPermission(message: SduiMessage): boolean {
-    const explicit = firstBooleanLike([
-        message?.can?.['view-readers-list'],
-        message?.can?.view_readers_list,
-        message?.can?.viewReadersList,
-        message?.can?.['view_readers_list'],
-        message?.can?.readers,
-        message?.can?.['readers'],
-    ]);
-
-    if (explicit !== null) return explicit;
-    return true;
-}
-
-function getMessageKey(message: SduiMessage): string {
-    return String(
-        message?.uuid ??
-            message?.id ??
-            `${message?.created_at || message?.updated_at || ''}-${message?.user_id || ''}-${message?.content || ''}`,
-    );
-}
-
-function getMessageTimestamp(message: SduiMessage): number {
-    const raw = message?.created_at || message?.updated_at;
-    if (!raw) return 0;
-    const time = new Date(raw).getTime();
-    return Number.isNaN(time) ? 0 : time;
-}
-
-function mergeUniqueMessages(
-    existing: SduiMessage[],
-    incoming: SduiMessage[],
-): SduiMessage[] {
-    const merged = [...existing, ...incoming];
-    const map = new Map<string, SduiMessage>();
-    for (const message of merged) {
-        map.set(getMessageKey(message), message);
-    }
-    return Array.from(map.values()).sort(
-        (a, b) => getMessageTimestamp(a) - getMessageTimestamp(b),
-    );
-}
-
-function isInfoMessage(message: SduiMessage): boolean {
-    const content = typeof message?.content === 'string' ? message.content : '';
-    return message?.type === 'HINT' || isActionKey(content);
-}
-
-function extractNewsId(message: SduiMessage): string {
-    return String(
-        message?.target?.id ??
-            message?.payload?.news_id ??
-            message?.payload?.news?.id ??
-            message?.preview?.id ??
-            '',
-    );
-}
-
-function indexNewsList(newsItems: SduiNews[]): Record<string, SduiNews> {
-    const index: Record<string, SduiNews> = {};
-    for (const item of newsItems) {
-        const id = String(item?.id ?? item?.news_id ?? item?.uuid ?? '');
-        if (id) index[id] = item;
-    }
-    return index;
-}
-
-function getLinkedNews(
-    message: SduiMessage,
-    newsById: Record<string, SduiNews>,
-): SduiNews | null {
-    const actionKey =
-        typeof message?.content === 'string' ? message.content.trim() : '';
-    if (actionKey !== 'news.posted') return null;
-
-    const fromIndex = newsById[extractNewsId(message)];
-    if (fromIndex) return fromIndex;
-
-    return (
-        message?.payload?.news ||
-        message?.preview ||
-        message?.target_snapshot ||
-        null
-    );
-}
-
-function getNewsTitle(news: SduiNews | null): string {
-    if (!news) return '';
-    return (
-        normalizeMessageText(news?.title) ||
-        normalizeMessageText(news?.name) ||
-        normalizeMessageText(news?.meta?.displayname) ||
-        ''
-    );
-}
-
-function getNewsBody(news: SduiNews | null): string {
-    if (!news) return '';
-    return (
-        normalizeMessageText(news?.content_rendered) ||
-        normalizeMessageText(news?.content) ||
-        normalizeMessageText(news?.text) ||
-        normalizeMessageText(news?.description) ||
-        normalizeMessageText(news?.meta?.description) ||
-        normalizeMessageText(news?.preview) ||
-        ''
-    );
-}
-
-function getNewsItemId(news: SduiNews, index = 0): string {
-    return String(
-        news?.id ?? news?.news_id ?? news?.uuid ?? news?.meta?.id ?? index,
-    );
-}
-
-function getNewsTimestamp(news: SduiNews): number {
-    const raw =
-        news?.published_at ||
-        news?.created_at ||
-        news?.updated_at ||
-        news?.date ||
-        news?.meta?.published_at;
-
-    if (!raw) return 0;
-    const timestamp = new Date(raw).getTime();
-    return Number.isNaN(timestamp) ? 0 : timestamp;
-}
-
-function getNewsDateTime(news: SduiNews): string {
-    const timestamp = getNewsTimestamp(news);
-    if (!timestamp) return '';
-    return new Date(timestamp).toLocaleString('de-DE', {
-        day: '2-digit',
-        month: '2-digit',
-        year: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-    });
-}
-
-function getNewsAuthor(news: SduiNews): string {
-    return (
-        news?.author?.displayname ||
-        news?.author?.name ||
-        news?.user?.meta?.displayname ||
-        news?.user?.name ||
-        news?.meta?.author ||
-        'Unbekannt'
-    );
-}
-
-function getNewsAudience(news: SduiNews): string {
-    return (
-        news?.channel?.name ||
-        news?.chat?.name ||
-        news?.group?.name ||
-        news?.audience?.name ||
-        news?.meta?.scope ||
-        'Alle'
-    );
-}
-
-function normalizeTextForComparison(value: string): string {
-    return value
-        .toLowerCase()
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/[\u2010-\u2015]/g, '-')
-        .replace(/[._-]+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-}
-
-function shouldHideDuplicateAttachmentText(
-    messageText: string,
-    attachments: SduiAttachment[],
-): boolean {
-    const normalizedMessage = normalizeTextForComparison(messageText);
-    if (!normalizedMessage) return false;
-    if (attachments.length === 0) return false;
-
-    const names = attachments
-        .map((attachment) => getAttachmentDisplayName(attachment))
-        .concat(attachments.map((attachment) => attachment.name))
-        .map((value) => normalizeTextForComparison(String(value || '')))
-        .filter(Boolean);
-
-    if (names.length === 0) return false;
-
-    const lines = messageText
-        .split(/\r?\n+/)
-        .map((line) => normalizeTextForComparison(line))
-        .filter(Boolean);
-
-    if (lines.length === 0) return false;
-    if (lines.length <= 2 && lines.every((line) => names.includes(line))) {
-        return true;
-    }
-
-    if (lines.length === 1) {
-        return names.some((name) => {
-            if (normalizedMessage === name) return true;
-            if (normalizedMessage === `${name} download`) return true;
-            return false;
-        });
-    }
-
-    return false;
-}
-
-type SduiReplyPreview = {
-    uuid: string;
-    sender: string;
-    text: string;
-    time: string;
-};
-
-function isLikelyMessageReferenceId(value: unknown): boolean {
-    const normalized = String(value ?? '').trim();
-    if (!normalized) return false;
-
-    if (/\s/.test(normalized)) return false;
-    if (/[/?&#=]/.test(normalized)) return false;
-    if (
-        /\.(png|jpe?g|gif|webp|avif|svg|pdf|docx?|xlsx?|pptx?|txt|zip)$/i.test(
-            normalized,
-        )
-    ) {
-        return false;
-    }
-
-    if (
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-            normalized,
-        )
-    ) {
-        return true;
-    }
-
-    if (/^[0-9a-f]{16,}$/i.test(normalized)) return true;
-    if (/^[0-9]{4,20}$/.test(normalized)) return true;
-    if (/^[a-z0-9][a-z0-9_-]{7,}$/i.test(normalized)) return true;
-
-    return false;
-}
-
-function pickFirstReplyReferenceId(candidates: unknown[]): string {
-    for (const value of candidates) {
-        if (!isLikelyMessageReferenceId(value)) continue;
-        return String(value).trim();
-    }
-    return '';
-}
-
-function extractReplyReferenceUuid(message: SduiMessage): string {
-    const candidates: unknown[] = [
-        message?.reply_to_uuid,
-        message?.reply_uuid,
-        message?.replyToUuid,
-        message?.in_reply_to,
-        message?.inReplyTo,
-        message?.thread_parent_uuid,
-        message?.meta?.reply_to_uuid,
-        message?.meta?.reply_uuid,
-        message?.payload?.reply_to_uuid,
-        message?.payload?.reply_uuid,
-        message?.payload?.reply?.uuid,
-        message?.payload?.reply_to?.uuid,
-        message?.payload?.reply?.id,
-        message?.payload?.reply_to?.id,
-        message?.reply?.uuid,
-        message?.reply?.id,
-        message?.reply_to?.uuid,
-        message?.reply_to?.id,
-        message?.quote?.uuid,
-        message?.quote?.id,
-        message?.quoted_message?.uuid,
-        message?.quoted_message?.id,
-    ];
-
-    const embeddedReferenceNodes = [
-        message?.reply,
-        message?.reply_to,
-        message?.payload?.reply,
-        message?.payload?.reply_to,
-        message?.meta?.reply,
-        message?.meta?.reply_to,
-        message?.quote,
-        message?.quoted_message,
-    ];
-
-    for (const node of embeddedReferenceNodes) {
-        if (!node || typeof node !== 'object' || Array.isArray(node)) {
-            continue;
-        }
-
-        candidates.push(
-            node?.message_uuid,
-            node?.reply_to_uuid,
-            node?.uuid,
-            node?.id,
-        );
-    }
-
-    const references = Array.isArray(message?.references)
-        ? message.references
-        : [];
-
-    for (const reference of references) {
-        if (!reference || typeof reference !== 'object') continue;
-
-        const referenceType = normalizeForPermissionMatch(
-            String(
-                reference?.type ||
-                    reference?.kind ||
-                    reference?.resource_type ||
-                    '',
-            ),
-        );
-
-        const looksLikeReplyReference =
-            referenceType.includes('reply') ||
-            referenceType.includes('quote') ||
-            referenceType.includes('thread') ||
-            reference?.reply != null ||
-            reference?.reply_to != null ||
-            reference?.reply_to_uuid != null ||
-            reference?.in_reply_to != null ||
-            reference?.quote != null;
-
-        if (!looksLikeReplyReference) continue;
-
-        candidates.push(
-            reference?.reply_to_uuid,
-            reference?.in_reply_to,
-            reference?.uuid,
-            reference?.id,
-            reference?.reply?.uuid,
-            reference?.reply?.id,
-            reference?.reply_to?.uuid,
-            reference?.reply_to?.id,
-            reference?.quote?.uuid,
-            reference?.quote?.id,
-        );
-    }
-
-    return pickFirstReplyReferenceId(candidates);
-}
-
-function extractReplyReferenceMessage(
-    message: SduiMessage,
-): SduiMessage | null {
-    const candidates = [
-        message?.reply_to_message,
-        message?.reply_to,
-        message?.reply,
-        message?.quoted_message,
-        message?.quote,
-        message?.payload?.reply,
-        message?.payload?.reply_to,
-        message?.meta?.reply,
-        message?.meta?.reply_to,
-        message?.reference?.message,
-    ];
-
-    const references = Array.isArray(message?.references)
-        ? message.references
-        : [];
-    for (const reference of references) {
-        if (!reference || typeof reference !== 'object') continue;
-
-        const referenceType = normalizeForPermissionMatch(
-            String(
-                reference?.type ||
-                    reference?.kind ||
-                    reference?.resource_type ||
-                    '',
-            ),
-        );
-
-        const looksLikeReplyReference =
-            referenceType.includes('reply') ||
-            referenceType.includes('quote') ||
-            referenceType.includes('thread') ||
-            reference?.reply != null ||
-            reference?.reply_to != null ||
-            reference?.reply_to_uuid != null ||
-            reference?.in_reply_to != null ||
-            reference?.quote != null;
-
-        if (!looksLikeReplyReference) continue;
-
-        candidates.push(
-            reference?.message,
-            reference?.reply,
-            reference?.reply_to,
-            reference?.quote,
-        );
-    }
-
-    for (const candidate of candidates) {
-        if (
-            !candidate ||
-            typeof candidate !== 'object' ||
-            Array.isArray(candidate)
-        ) {
-            continue;
-        }
-
-        const hasMessageBody =
-            candidate?.content ||
-            candidate?.content_rendered ||
-            candidate?.text ||
-            candidate?.message;
-
-        if (hasMessageBody) {
-            return candidate;
-        }
-    }
-
-    return null;
-}
-
-function getReplyPreviewForMessage(
-    message: SduiMessage,
-    messageByUuid: Record<string, SduiMessage>,
-    newsById: Record<string, SduiNews>,
-): SduiReplyPreview | null {
-    const directReference = extractReplyReferenceMessage(message);
-    const replyUuid = extractReplyReferenceUuid(message);
-
-    const fallbackReference = replyUuid ? messageByUuid[replyUuid] : null;
-    const referencedMessage = directReference || fallbackReference || null;
-
-    if (!referencedMessage) {
-        return null;
-    }
-
-    const ownUuid = getMessageUuid(message);
-    const referencedUuid = getMessageUuid(referencedMessage) || replyUuid;
-    if (referencedUuid && ownUuid && referencedUuid === ownUuid) {
-        return null;
-    }
-
-    const linkedNews = getLinkedNews(referencedMessage, newsById);
-    return {
-        uuid: referencedUuid || '',
-        sender: getMessageSender(referencedMessage),
-        text: getMessageText(referencedMessage, linkedNews),
-        time: getMessageTime(referencedMessage),
-    };
-}
-
-function getMessageText(
-    message: SduiMessage,
-    linkedNews: SduiNews | null,
-): string {
-    if (isDeletedMessage(message)) {
-        return 'Nachricht wurde gelöscht.';
-    }
-
-    const formatActionMessage = (actionKey: string): string => {
-        if (actionKey === 'news.posted' && linkedNews) {
-            const newsBody = getNewsBody(linkedNews);
-            if (newsBody) return newsBody;
-        }
-
-        if (ACTION_MESSAGE_MAP[actionKey]) {
-            return ACTION_MESSAGE_MAP[actionKey];
-        }
-
-        return actionKey;
-    };
-
-    const rendered = normalizeMessageText(message?.content_rendered);
-    if (rendered) {
-        if (isActionKey(rendered)) {
-            return formatActionMessage(rendered);
-        }
-        return rendered;
-    }
-
-    const actionKey =
-        typeof message?.content === 'string' ? message.content.trim() : '';
-
-    if (isActionKey(actionKey)) {
-        return formatActionMessage(actionKey);
-    }
-
-    const text = normalizeMessageText(
-        message?.text ||
-            message?.message ||
-            message?.content ||
-            message?.meta?.description ||
-            '',
-    );
-
-    return text || 'Nachricht';
-}
-
-function getMessageSender(message: SduiMessage): string {
-    const first = message?.user?.firstname || '';
-    const last = message?.user?.lastname || '';
-    const fullName = `${first} ${last}`.trim();
-
-    return (
-        message?.author?.displayname ||
-        message?.author?.name ||
-        message?.user?.meta?.displayname ||
-        fullName ||
-        'SDUI Nutzer'
-    );
-}
-
-function getMessageTime(message: SduiMessage): string {
-    const raw = message?.created_at || message?.updated_at;
-    if (!raw) return '';
-    const date = new Date(raw);
-    if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleTimeString('de-DE', {
-        hour: '2-digit',
-        minute: '2-digit',
-    });
-}
-
-function getMessageDateTime(message: SduiMessage): string {
-    const raw = message?.created_at || message?.updated_at;
-    if (!raw) return 'Unbekannt';
-
-    const date = new Date(raw);
-    if (Number.isNaN(date.getTime())) return 'Unbekannt';
-
-    return date.toLocaleString('de-DE', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-    });
-}
-
-function normalizeReaderList(input: any): any[] {
-    if (Array.isArray(input)) return input;
-    if (Array.isArray(input?.data)) return input.data;
-    if (Array.isArray(input?.readers)) return input.readers;
-    return [];
-}
-
-function getReaderName(reader: any): string {
-    const first = reader?.firstname || reader?.first_name || '';
-    const last = reader?.lastname || reader?.last_name || '';
-    const fullName = `${first} ${last}`.trim();
-
-    return (
-        reader?.displayname ||
-        reader?.name ||
-        reader?.meta?.displayname ||
-        fullName ||
-        'Unbekannter Leser'
-    );
-}
-
-function normalizeForPermissionMatch(value: string): string {
-    return value
-        .toLowerCase()
-        .replace(/ä/g, 'ae')
-        .replace(/ö/g, 'oe')
-        .replace(/ü/g, 'ue')
-        .replace(/ß/g, 'ss');
-}
-
-function firstBooleanLike(values: unknown[]): boolean | null {
-    for (const value of values) {
-        if (typeof value === 'boolean') {
-            return value;
-        }
-
-        if (typeof value === 'number') {
-            if (value === 1) return true;
-            if (value === 0) return false;
-        }
-
-        if (typeof value === 'string') {
-            const normalized = normalizeForPermissionMatch(value.trim());
-            if (normalized === 'true' || normalized === '1') return true;
-            if (normalized === 'false' || normalized === '0') return false;
-        }
-    }
-
-    return null;
-}
-
-function containsOneWayRestrictionText(input: string): boolean {
-    const normalized = normalizeForPermissionMatch(input)
-        .replace(/["']/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-    if (!normalized) return false;
-
-    const hasOneWayTerm =
-        normalized.includes('one-way') || normalized.includes('one way');
-    const hasAdminWriteRestriction =
-        normalized.includes('nur administratoren duerfen schreiben') ||
-        normalized.includes('nur gruppen-administratoren duerfen schreiben') ||
-        normalized.includes('nur gruppenadministratoren duerfen schreiben');
-
-    return (
-        hasAdminWriteRestriction ||
-        (hasOneWayTerm &&
-            (normalized.includes('duerfen schreiben') ||
-                normalized.includes('konversation eroeffnen') ||
-                normalized.includes('anklopfen')))
-    );
-}
-
-function hasOneWayRestrictionSignal(source: unknown, depth = 0): boolean {
-    if (source == null || depth > 6) return false;
-
-    if (typeof source === 'string') {
-        return containsOneWayRestrictionText(source);
-    }
-
-    if (Array.isArray(source)) {
-        return source.some((item) =>
-            hasOneWayRestrictionSignal(item, depth + 1),
-        );
-    }
-
-    if (typeof source !== 'object') return false;
-
-    for (const [rawKey, value] of Object.entries(
-        source as Record<string, unknown>,
-    )) {
-        const key = normalizeForPermissionMatch(rawKey);
-
-        if (typeof value === 'boolean') {
-            if (
-                value === true &&
-                (key.includes('one_way') ||
-                    key.includes('oneway') ||
-                    key.includes('read_only') ||
-                    key.includes('readonly') ||
-                    key.includes('broadcast') ||
-                    key.includes('announcement'))
-            ) {
-                return true;
-            }
-
-            if (
-                value === false &&
-                (key.includes('can_write') ||
-                    key.includes('canwrite') ||
-                    key.includes('can_post') ||
-                    key.includes('canpost') ||
-                    key.includes('writable') ||
-                    key.includes('writeable'))
-            ) {
-                return true;
-            }
-        }
-
-        if (
-            typeof value === 'number' &&
-            value === 0 &&
-            (key.includes('can_write') ||
-                key.includes('canwrite') ||
-                key.includes('can_post') ||
-                key.includes('canpost') ||
-                key.includes('writable') ||
-                key.includes('writeable'))
-        ) {
-            return true;
-        }
-
-        if (typeof value === 'string' && containsOneWayRestrictionText(value)) {
-            return true;
-        }
-
-        if (
-            typeof value === 'object' &&
-            hasOneWayRestrictionSignal(value, depth + 1)
-        ) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function getPathValue(source: any, path: string): unknown {
-    return path.split('.').reduce((value: any, segment: string) => {
-        if (value == null) return undefined;
-        return value[segment];
-    }, source);
-}
-
-function getValueMode(values: unknown[]): unknown {
-    const counts = new Map<string, { count: number; value: unknown }>();
-
-    for (const value of values) {
-        if (
-            typeof value !== 'boolean' &&
-            typeof value !== 'number' &&
-            typeof value !== 'string'
-        ) {
-            continue;
-        }
-
-        const key = `${typeof value}:${String(value)}`;
-        const entry = counts.get(key);
-        if (entry) {
-            entry.count += 1;
-        } else {
-            counts.set(key, { count: 1, value });
-        }
-    }
-
-    let mode: unknown = undefined;
-    let modeCount = 0;
-    for (const entry of counts.values()) {
-        if (entry.count > modeCount) {
-            mode = entry.value;
-            modeCount = entry.count;
-        }
-    }
-
-    return mode;
-}
-
-function isRestrictivePermissionValue(value: unknown): boolean {
-    if (value === false) return true;
-    if (typeof value === 'number') return value === 0;
-
-    if (typeof value === 'string') {
-        const normalized = normalizeForPermissionMatch(value.trim());
-        return (
-            normalized.includes('read_only') ||
-            normalized.includes('readonly') ||
-            normalized.includes('receiver') ||
-            normalized.includes('announcement') ||
-            normalized.includes('broadcast') ||
-            normalized.includes('disabled') ||
-            normalized.includes('muted') ||
-            normalized.includes('cannot_post') ||
-            normalized.includes('no_write')
-        );
-    }
-
-    return false;
-}
-
-function getExplicitWritePermission(chat: SduiChatItem | null): boolean | null {
-    if (!chat) return null;
-
-    const explicitWritePermission = firstBooleanLike([
-        chat?.can_write,
-        chat?.canWrite,
-        chat?.writable,
-        chat?.writeable,
-        chat?.permissions?.write,
-        chat?.permissions?.can_write,
-        chat?.permissions?.canWrite,
-        chat?.permissions?.post,
-        chat?.permissions?.can_post,
-        chat?.permissions?.canPost,
-        chat?.meta?.can_write,
-        chat?.meta?.canWrite,
-        chat?.meta?.writable,
-        chat?.meta?.writeable,
-        chat?.meta?.permissions?.write,
-        chat?.meta?.permissions?.can_write,
-        chat?.meta?.permissions?.canWrite,
-        chat?.meta?.permissions?.post,
-        chat?.meta?.permissions?.can_post,
-        chat?.meta?.permissions?.canPost,
-        chat?.can?.['post-message'],
-        chat?.chat?.can?.['post-message'],
-        chat?.meta?.can?.['post-message'],
-        chat?.chat?.meta?.can?.['post-message'],
-    ]);
-    if (explicitWritePermission !== null) {
-        return explicitWritePermission;
-    }
-
-    const explicitReadonly = firstBooleanLike([
-        chat?.read_only,
-        chat?.readOnly,
-        chat?.readonly,
-        chat?.is_readonly,
-        chat?.isReadOnly,
-        chat?.meta?.read_only,
-        chat?.meta?.readOnly,
-        chat?.meta?.readonly,
-        chat?.meta?.is_readonly,
-        chat?.meta?.isReadOnly,
-        chat?.one_way,
-        chat?.oneWay,
-        chat?.oneway,
-        chat?.chat?.one_way,
-        chat?.chat?.oneWay,
-        chat?.chat?.oneway,
-        chat?.meta?.one_way,
-        chat?.meta?.oneWay,
-        chat?.meta?.oneway,
-    ]);
-    if (explicitReadonly === true) {
-        return false;
-    }
-
-    const roleHint = normalizeForPermissionMatch(
-        String(chat?.member?.role ?? chat?.role ?? chat?.meta?.role ?? ''),
-    );
-    if (
-        roleHint.includes('read_only') ||
-        roleHint.includes('readonly') ||
-        roleHint.includes('receiver')
-    ) {
-        return false;
-    }
-
-    const typeHint = normalizeForPermissionMatch(
-        String(chat?.type ?? chat?.meta?.type ?? ''),
-    );
-    if (typeHint.includes('announcement') || typeHint.includes('broadcast')) {
-        return false;
-    }
-
-    return null;
-}
-
-function canWriteToChat(
-    chat: SduiChatItem | null,
-    chats: SduiChatItem[],
-    chatDetails: SduiChatItem | null,
-    messages: SduiMessage[],
-): boolean {
-    if (!chat) return false;
-
-    const explicitPermissionFromDetails =
-        getExplicitWritePermission(chatDetails);
-    if (explicitPermissionFromDetails !== null) {
-        return explicitPermissionFromDetails;
-    }
-
-    const explicitPermissionFromChat = getExplicitWritePermission(chat);
-    if (explicitPermissionFromChat !== null) {
-        return explicitPermissionFromChat;
-    }
-
-    if (
-        hasOneWayRestrictionSignal(chatDetails) ||
-        hasOneWayRestrictionSignal(chat) ||
-        hasOneWayRestrictionSignal(messages)
-    ) {
-        return false;
-    }
-
-    const referenceChats = chats.filter((item) => item !== chat);
-    if (referenceChats.length === 0) {
-        return true;
-    }
-
-    const comparablePaths = [
-        'can.post-message',
-        'chat.can.post-message',
-        'meta.can.post-message',
-        'chat.meta.can.post-message',
-        'can.toggle-oneway',
-        'chat.can.toggle-oneway',
-        'meta.can.toggle-oneway',
-        'chat.meta.can.toggle-oneway',
-        'permissions.write',
-        'permissions.can_write',
-        'permissions.canWrite',
-        'permissions.post',
-        'permissions.can_post',
-        'permissions.canPost',
-        'meta.permissions.write',
-        'meta.permissions.can_write',
-        'meta.permissions.canWrite',
-        'meta.permissions.post',
-        'meta.permissions.can_post',
-        'meta.permissions.canPost',
-        'read_only',
-        'readOnly',
-        'readonly',
-        'is_readonly',
-        'isReadOnly',
-        'meta.read_only',
-        'meta.readOnly',
-        'meta.readonly',
-        'meta.is_readonly',
-        'meta.isReadOnly',
-        'role',
-        'member.role',
-        'meta.role',
-        'type',
-        'meta.type',
-        'channel_type',
-        'meta.channel_type',
-    ];
-
-    for (const path of comparablePaths) {
-        const selectedValue =
-            getPathValue(chatDetails, path) ?? getPathValue(chat, path);
-        if (selectedValue == null) continue;
-
-        const referenceValues = referenceChats
-            .map((item) => getPathValue(item, path))
-            .filter((value) => value != null);
-        if (referenceValues.length === 0) continue;
-
-        const referenceMode = getValueMode(referenceValues);
-        if (referenceMode == null) continue;
-
-        const selectedIsRestrictive =
-            isRestrictivePermissionValue(selectedValue);
-        const referenceIsRestrictive =
-            isRestrictivePermissionValue(referenceMode);
-
-        if (selectedIsRestrictive && !referenceIsRestrictive) {
-            return false;
-        }
-    }
-
-    return true;
-}
 
 export function SduiChat() {
     const [chats, setChats] = useState<SduiChatItem[]>([]);
@@ -1118,6 +96,12 @@ export function SduiChat() {
 
     const [draft, setDraft] = useState<string>('');
     const [sending, setSending] = useState<boolean>(false);
+    const [isComposerFocused, setIsComposerFocused] = useState<boolean>(false);
+    const [isMobileKeyboardOpen, setIsMobileKeyboardOpen] =
+        useState<boolean>(false);
+    const [highlightedMessageKey, setHighlightedMessageKey] = useState<
+        string | null
+    >(null);
     const [replyToMessage, setReplyToMessage] = useState<SduiMessage | null>(
         null,
     );
@@ -1148,11 +132,19 @@ export function SduiChat() {
     const loadingNewsRef = useRef<boolean>(false);
     const hasMoreNewsRef = useRef<boolean>(true);
     const shouldStickToBottomRef = useRef<boolean>(true);
+    const visualViewportBaseHeightRef = useRef<number>(0);
+    const messagePageRef = useRef<number>(1);
+    const hasMoreMessagesRef = useRef<boolean>(true);
+    const messageElementsRef = useRef<Record<string, HTMLDivElement | null>>(
+        {},
+    );
+    const replyHighlightTimeoutRef = useRef<number | null>(null);
 
     const selectedChatId = useMemo(
         () => (selectedChat ? getMessageChatId(selectedChat) : ''),
         [selectedChat],
     );
+    const isSduiDevMode = useMemo(() => isSduiDeveloperModeEnabled(), []);
     const oneWayDetected = useMemo(
         () =>
             hasOneWayRestrictionSignal(selectedChatDetails) ||
@@ -1185,6 +177,30 @@ export function SduiChat() {
         }
         return index;
     }, [messages]);
+    const scrollAndHighlightMessageByKey = useCallback((targetKey: string) => {
+        const targetElement = messageElementsRef.current[targetKey];
+        if (!targetElement) return false;
+
+        shouldStickToBottomRef.current = false;
+        targetElement.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center',
+        });
+
+        if (replyHighlightTimeoutRef.current !== null) {
+            window.clearTimeout(replyHighlightTimeoutRef.current);
+        }
+
+        setHighlightedMessageKey(targetKey);
+        replyHighlightTimeoutRef.current = window.setTimeout(() => {
+            setHighlightedMessageKey((current) =>
+                current === targetKey ? null : current,
+            );
+            replyHighlightTimeoutRef.current = null;
+        }, 1800);
+
+        return true;
+    }, []);
     const newsItems = useMemo(
         () =>
             Object.values(newsById).sort(
@@ -1268,6 +284,51 @@ export function SduiChat() {
         window.addEventListener('pointerdown', handlePointerDown);
         return () =>
             window.removeEventListener('pointerdown', handlePointerDown);
+    }, []);
+
+    useEffect(() => {
+        return () => {
+            if (replyHighlightTimeoutRef.current !== null) {
+                window.clearTimeout(replyHighlightTimeoutRef.current);
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+
+        const viewport = window.visualViewport;
+        if (!viewport) return;
+
+        const updateKeyboardState = () => {
+            const currentHeight = viewport.height;
+            if (
+                !visualViewportBaseHeightRef.current ||
+                currentHeight > visualViewportBaseHeightRef.current
+            ) {
+                visualViewportBaseHeightRef.current = currentHeight;
+            }
+
+            const heightDelta =
+                visualViewportBaseHeightRef.current - currentHeight;
+            setIsMobileKeyboardOpen(heightDelta > 140);
+        };
+
+        const resetViewportBase = () => {
+            visualViewportBaseHeightRef.current = viewport.height;
+            updateKeyboardState();
+        };
+
+        resetViewportBase();
+        viewport.addEventListener('resize', updateKeyboardState);
+        viewport.addEventListener('scroll', updateKeyboardState);
+        window.addEventListener('orientationchange', resetViewportBase);
+
+        return () => {
+            viewport.removeEventListener('resize', updateKeyboardState);
+            viewport.removeEventListener('scroll', updateKeyboardState);
+            window.removeEventListener('orientationchange', resetViewportBase);
+        };
     }, []);
 
     const loadChats = useCallback(async () => {
@@ -1381,6 +442,14 @@ export function SduiChat() {
         hasMoreNewsRef.current = hasMoreNews;
     }, [hasMoreNews]);
 
+    React.useEffect(() => {
+        messagePageRef.current = messagePage;
+    }, [messagePage]);
+
+    React.useEffect(() => {
+        hasMoreMessagesRef.current = hasMoreMessages;
+    }, [hasMoreMessages]);
+
     const loadMessagesPage = useCallback(
         async (
             chat: SduiChatItem,
@@ -1471,6 +540,71 @@ export function SduiChat() {
             }
         },
         [ensureNewsForMessages, scrollToBottom],
+    );
+
+    const jumpToMessageByUuid = useCallback(
+        async (targetMessageUuid: string) => {
+            if (!targetMessageUuid) return;
+
+            const findTargetMessage = (): SduiMessage | null => {
+                return (
+                    messagesRef.current.find(
+                        (candidate) =>
+                            getMessageUuid(candidate) === targetMessageUuid,
+                    ) || null
+                );
+            };
+
+            let targetMessage = findTargetMessage();
+
+            if (!targetMessage && selectedChat) {
+                let safetyCounter = 0;
+
+                while (
+                    !targetMessage &&
+                    hasMoreMessagesRef.current &&
+                    safetyCounter < 25
+                ) {
+                    if (loadingOlderRef.current) break;
+
+                    loadingOlderRef.current = true;
+                    setLoadingOlderMessages(true);
+                    try {
+                        const nextPage = messagePageRef.current + 1;
+                        await loadMessagesPage(
+                            selectedChat,
+                            nextPage,
+                            'prepend',
+                            false,
+                        );
+                    } finally {
+                        loadingOlderRef.current = false;
+                        setLoadingOlderMessages(false);
+                    }
+
+                    targetMessage = findTargetMessage();
+                    safetyCounter += 1;
+                }
+            }
+
+            if (!targetMessage) {
+                setMessageError(
+                    'Originalnachricht konnte nicht im Verlauf gefunden werden.',
+                );
+                return;
+            }
+
+            const targetKey = getMessageKey(targetMessage);
+            if (!scrollAndHighlightMessageByKey(targetKey)) {
+                requestAnimationFrame(() => {
+                    scrollAndHighlightMessageByKey(targetKey);
+                });
+                window.setTimeout(() => {
+                    scrollAndHighlightMessageByKey(targetKey);
+                }, 160);
+            }
+        },
+        [loadMessagesPage, scrollAndHighlightMessageByKey, selectedChat],
     );
 
     const bootstrap = useCallback(async () => {
@@ -1868,34 +1002,103 @@ export function SduiChat() {
 
     if (!isAuthenticated) {
         return (
-            <div className="max-w-md mx-auto p-6 mt-8 bg-white dark:bg-slate-900 rounded-xl shadow-md border border-slate-100 dark:border-slate-800">
-                <div className="mb-6">
-                    <h2 className="text-xl font-semibold mb-2 text-slate-900 dark:text-slate-100">
-                        Connect SDUI
-                    </h2>
-                    <p className="text-sm text-slate-500 dark:text-slate-400">
-                        Your WebUntis credentials will be securely used to
-                        auto-authenticate with SDUI.
-                    </p>
-                </div>
-                {errorMsg && (
-                    <div className="mb-4 text-red-700 bg-red-50 p-2 rounded-md border border-red-200 text-sm">
-                        {errorMsg}
+            <div className="flex h-full items-center justify-center bg-linear-to-b from-slate-50 via-white to-sky-50/70 p-4 dark:from-slate-900 dark:via-slate-900 dark:to-slate-950">
+                <div className="w-full max-w-2xl overflow-hidden rounded-3xl border border-slate-200/80 bg-white/95 shadow-xl shadow-slate-900/10 dark:border-slate-700/70 dark:bg-slate-900/95 sdui-animate-content">
+                    <div className="grid md:grid-cols-[1.1fr_0.9fr]">
+                        <div
+                            className="relative border-b border-slate-200/80 p-6 sm:p-7 dark:border-slate-700/70 md:border-b-0 md:border-r sdui-animate-stagger"
+                            style={{ animationDelay: '40ms' }}
+                        >
+                            <div className="pointer-events-none absolute -right-16 -top-16 h-44 w-44 rounded-full bg-sky-300/20 blur-3xl dark:bg-sky-500/20" />
+                            <div className="relative">
+                                <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-900/70 dark:bg-emerald-900/30 dark:text-emerald-200">
+                                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                                    Sicher verbunden
+                                </div>
+                                <h2 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">
+                                    SDUI in Periodix aktivieren
+                                </h2>
+                                <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                                    Verbinde SDUI einmalig ueber deinen
+                                    bestehenden WebUntis-Login und erhalte Chats
+                                    und News direkt in Periodix.
+                                </p>
+                                <ul className="mt-5 space-y-2 text-sm text-slate-700 dark:text-slate-200">
+                                    <li className="flex items-start gap-2">
+                                        <span className="mt-0.5 h-5 w-5 shrink-0 rounded-full bg-sky-100 text-center text-xs font-semibold leading-5 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200">
+                                            1
+                                        </span>
+                                        Automatische Anmeldung mit deinen
+                                        bereits hinterlegten Zugangsdaten
+                                    </li>
+                                    <li className="flex items-start gap-2">
+                                        <span className="mt-0.5 h-5 w-5 shrink-0 rounded-full bg-sky-100 text-center text-xs font-semibold leading-5 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200">
+                                            2
+                                        </span>
+                                        Chatverlaeufe und Schul-News gebuendelt
+                                        in einem Fenster
+                                    </li>
+                                    <li className="flex items-start gap-2">
+                                        <span className="mt-0.5 h-5 w-5 shrink-0 rounded-full bg-sky-100 text-center text-xs font-semibold leading-5 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200">
+                                            3
+                                        </span>
+                                        Schneller Zugriff ohne Medienbruch im
+                                        Dashboard
+                                    </li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div
+                            className="p-6 sm:p-7 sdui-animate-stagger"
+                            style={{ animationDelay: '120ms' }}
+                        >
+                            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                Integration starten
+                            </h3>
+                            <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+                                Ein Klick reicht, um die SDUI-Verbindung ueber
+                                WebUntis einzurichten.
+                            </p>
+                            {errorMsg && (
+                                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200">
+                                    {errorMsg}
+                                </div>
+                            )}
+                            <form onSubmit={handleAuth} className="mt-5">
+                                <button
+                                    type="submit"
+                                    className="group flex w-full items-center justify-center gap-2 rounded-xl bg-linear-to-r from-sky-600 to-cyan-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-sky-900/20 transition-all duration-300 hover:-translate-y-0.5 hover:from-sky-700 hover:to-cyan-700"
+                                >
+                                    Mit WebUntis verbinden
+                                    <svg
+                                        className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
+                                        viewBox="0 0 20 20"
+                                        fill="currentColor"
+                                        aria-hidden="true"
+                                    >
+                                        <path
+                                            fillRule="evenodd"
+                                            d="M3 10a.75.75 0 01.75-.75h10.69L11.22 6.03a.75.75 0 111.06-1.06l4.5 4.5a.75.75 0 010 1.06l-4.5 4.5a.75.75 0 11-1.06-1.06l3.22-3.22H3.75A.75.75 0 013 10z"
+                                            clipRule="evenodd"
+                                        />
+                                    </svg>
+                                </button>
+                            </form>
+                            <p className="mt-3 text-xs text-slate-400 dark:text-slate-500">
+                                Es werden keine zusaetzlichen Zugangsdaten im
+                                Browser abgefragt.
+                            </p>
+                        </div>
                     </div>
-                )}
-                <form onSubmit={handleAuth} className="space-y-4">
-                    <button
-                        type="submit"
-                        className="w-full rounded-md bg-blue-600 text-white hover:bg-blue-700 h-10 px-4 py-2 text-sm font-medium"
-                    >
-                        Connect with WebUntis
-                    </button>
-                </form>
+                </div>
             </div>
         );
     }
 
     const showInitialMessagesSpinner = loadingMessages && messages.length === 0;
+    const shouldCompactComposerSpacing =
+        isMobileKeyboardOpen || isComposerFocused;
     const serializedMessageInfo = (() => {
         if (!messageInfoTarget) return '';
         try {
@@ -1906,7 +1109,7 @@ export function SduiChat() {
     })();
 
     return (
-        <div className="h-full w-full flex flex-col bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+        <div className="h-full w-full flex flex-col bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 sdui-animate-content">
             <div className="shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2">
                 <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
                     <button
@@ -1941,6 +1144,17 @@ export function SduiChat() {
                     </button>
                 </div>
             </div>
+
+            <SduiDevPanel
+                isVisible={isSduiDevMode}
+                chats={chats}
+                selectedChat={selectedChat}
+                selectedChatId={selectedChatId}
+                selectedChatDetails={selectedChatDetails}
+                canWriteInSelectedChat={canWriteInSelectedChat}
+                oneWayDetected={oneWayDetected}
+                activeTab={activeTab}
+            />
 
             <div className="min-h-0 flex-1 flex overflow-hidden">
                 {activeTab === 'chats' ? (
@@ -1980,7 +1194,7 @@ export function SduiChat() {
                                                     handleSelectChat(chat)
                                                 }
                                                 className={`
-                                            w-full text-left rounded-lg border px-3 py-2 transition-colors
+                                            w-full text-left rounded-lg border px-3 py-2 transition-colors sdui-animate-stagger
                                         ${
                                             active
                                                 ? 'border-blue-300 bg-blue-100 dark:border-blue-700 dark:bg-blue-900/40'
@@ -1989,6 +1203,9 @@ export function SduiChat() {
                                                   : 'border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50'
                                         }
                                     `}
+                                                style={{
+                                                    animationDelay: `${Math.min(index, 10) * 24}ms`,
+                                                }}
                                             >
                                                 <div className="flex items-start justify-between gap-2">
                                                     <h3 className="min-w-0 font-semibold text-sm truncate">
@@ -2008,7 +1225,7 @@ export function SduiChat() {
                             </div>
                         </aside>
 
-                        <section className="flex-1 min-w-0 flex flex-col bg-slate-50 dark:bg-slate-950">
+                        <section className="flex-1 min-w-0 flex flex-col bg-slate-50 dark:bg-slate-950 sdui-animate-tab">
                             {!selectedChat ? (
                                 <div className="hidden md:flex flex-1 items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
                                     Chat auswaehlen, um den Verlauf zu sehen.
@@ -2102,10 +1319,50 @@ export function SduiChat() {
                                                 const newsBody =
                                                     getNewsBody(linkedNews);
                                                 const newsImages =
-                                                    extractImageUrls([
+                                                    extractImageUrls(
                                                         linkedNews,
+                                                    );
+                                                const newsImageKeys = new Set(
+                                                    newsImages.map((src) =>
+                                                        getImageDedupeKey(src),
+                                                    ),
+                                                );
+                                                const messageAttachments =
+                                                    extractMessageAttachments(
                                                         message,
-                                                    ]);
+                                                    );
+                                                const visibleImageAttachments =
+                                                    messageAttachments.filter(
+                                                        (attachment) => {
+                                                            if (
+                                                                !attachment.isImage
+                                                            ) {
+                                                                return false;
+                                                            }
+
+                                                            if (
+                                                                hiddenImageUrls[
+                                                                    attachment
+                                                                        .url
+                                                                ]
+                                                            ) {
+                                                                return false;
+                                                            }
+
+                                                            if (
+                                                                actionKey !==
+                                                                'news.posted'
+                                                            ) {
+                                                                return true;
+                                                            }
+
+                                                            return !newsImageKeys.has(
+                                                                getImageDedupeKey(
+                                                                    attachment.url,
+                                                                ),
+                                                            );
+                                                        },
+                                                    );
                                                 const visibleNewsImages =
                                                     newsImages.filter(
                                                         (src) =>
@@ -2116,18 +1373,6 @@ export function SduiChat() {
                                                 const singleNewsImage =
                                                     visibleNewsImages.length ===
                                                     1;
-                                                const messageAttachments =
-                                                    extractMessageAttachments(
-                                                        message,
-                                                    );
-                                                const visibleImageAttachments =
-                                                    messageAttachments.filter(
-                                                        (attachment) =>
-                                                            attachment.isImage &&
-                                                            !hiddenImageUrls[
-                                                                attachment.url
-                                                            ],
-                                                    );
                                                 const fileAttachments =
                                                     messageAttachments.filter(
                                                         (attachment) =>
@@ -2191,6 +1436,13 @@ export function SduiChat() {
                                                 const isCopiedThisMessage =
                                                     copiedMessageKey ===
                                                     messageKey;
+                                                const canJumpToReplyReference =
+                                                    Boolean(
+                                                        replyReferencePreview?.uuid,
+                                                    );
+                                                const isHighlightedMessage =
+                                                    highlightedMessageKey ===
+                                                    messageKey;
                                                 const linkClassName = info
                                                     ? 'underline decoration-amber-400/80 underline-offset-2 text-amber-800 dark:text-amber-200 hover:text-amber-900 dark:hover:text-amber-100'
                                                     : 'underline decoration-blue-400/80 underline-offset-2 text-blue-700 dark:text-blue-300 hover:text-blue-800 dark:hover:text-blue-200';
@@ -2198,10 +1450,26 @@ export function SduiChat() {
                                                 return (
                                                     <div
                                                         key={messageKey}
-                                                        className={`max-w-[90%] rounded-2xl border px-3 py-2 ${
+                                                        ref={(element) => {
+                                                            if (element) {
+                                                                messageElementsRef.current[
+                                                                    messageKey
+                                                                ] = element;
+                                                            } else {
+                                                                delete messageElementsRef
+                                                                    .current[
+                                                                    messageKey
+                                                                ];
+                                                            }
+                                                        }}
+                                                        className={`max-w-[90%] rounded-2xl border px-3 py-2 transition-all duration-300 ${
                                                             info
                                                                 ? 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20'
                                                                 : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800'
+                                                        } ${
+                                                            isHighlightedMessage
+                                                                ? 'ring-2 ring-sky-400/90 dark:ring-sky-500/90 shadow-[0_0_0_4px_rgba(14,165,233,0.16)]'
+                                                                : ''
                                                         }`}
                                                     >
                                                         <div className="flex items-center justify-between gap-4 mb-1">
@@ -2293,8 +1561,27 @@ export function SduiChat() {
                                                         </div>
 
                                                         {replyReferencePreview && (
-                                                            <div className="mb-2 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 px-2.5 py-1.5">
-                                                                <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    if (
+                                                                        replyReferencePreview.uuid
+                                                                    ) {
+                                                                        jumpToMessageByUuid(
+                                                                            replyReferencePreview.uuid,
+                                                                        );
+                                                                    }
+                                                                }}
+                                                                disabled={
+                                                                    !canJumpToReplyReference
+                                                                }
+                                                                className={`mb-2 w-full rounded-xl border border-slate-200/90 dark:border-slate-700/80 bg-linear-to-br from-slate-50 via-slate-50 to-indigo-50/60 dark:from-slate-900/70 dark:via-slate-900/65 dark:to-indigo-950/20 px-2.5 py-1.5 text-left transition ${
+                                                                    canJumpToReplyReference
+                                                                        ? 'cursor-pointer hover:border-slate-300 dark:hover:border-slate-600 hover:from-slate-100 hover:to-indigo-100/60 dark:hover:from-slate-800/80 dark:hover:to-indigo-900/30'
+                                                                        : 'cursor-default'
+                                                                }`}
+                                                            >
+                                                                <div className="text-[10px] font-semibold text-slate-600 dark:text-slate-300">
                                                                     Antwort auf{' '}
                                                                     {
                                                                         replyReferencePreview.sender
@@ -2302,12 +1589,15 @@ export function SduiChat() {
                                                                     {replyReferencePreview.time
                                                                         ? ` • ${replyReferencePreview.time}`
                                                                         : ''}
+                                                                    {canJumpToReplyReference
+                                                                        ? ' • Zum Original'
+                                                                        : ''}
                                                                 </div>
                                                                 <div className="mt-0.5 text-xs text-slate-700 dark:text-slate-200 line-clamp-2">
                                                                     {replyReferencePreview.text ||
                                                                         'Nachricht'}
                                                                 </div>
-                                                            </div>
+                                                            </button>
                                                         )}
 
                                                         {showMessageText && (
@@ -2436,19 +1726,32 @@ export function SduiChat() {
                                                                             download={
                                                                                 attachment.name
                                                                             }
-                                                                            className="flex min-w-0 items-center justify-between gap-2 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 px-2 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                                                            className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-emerald-200/80 dark:border-emerald-800/70 bg-linear-to-r from-emerald-50 to-cyan-50 dark:from-emerald-950/30 dark:to-cyan-950/25 px-2.5 py-2 transition hover:from-emerald-100 hover:to-cyan-100 dark:hover:from-emerald-900/35 dark:hover:to-cyan-900/35"
                                                                         >
-                                                                            <span
-                                                                                className="min-w-0 text-xs text-slate-700 dark:text-slate-200 truncate"
-                                                                                title={
-                                                                                    attachment.name
-                                                                                }
-                                                                            >
-                                                                                {getAttachmentDisplayName(
-                                                                                    attachment,
-                                                                                )}
-                                                                            </span>
-                                                                            <span className="text-[10px] text-slate-500 dark:text-slate-400 shrink-0">
+                                                                            <div className="min-w-0 flex items-center gap-2">
+                                                                                <span className="shrink-0 flex h-5 w-5 items-center justify-center rounded-md bg-emerald-600 text-white">
+                                                                                    <svg
+                                                                                        className="h-3 w-3"
+                                                                                        viewBox="0 0 20 20"
+                                                                                        fill="currentColor"
+                                                                                        aria-hidden="true"
+                                                                                    >
+                                                                                        <path d="M10 2a.75.75 0 01.75.75v7.19l1.72-1.72a.75.75 0 111.06 1.06l-3 3a.75.75 0 01-1.06 0l-3-3a.75.75 0 011.06-1.06l1.72 1.72V2.75A.75.75 0 0110 2z" />
+                                                                                        <path d="M4.5 13.25a.75.75 0 00-1.5 0V15A2.5 2.5 0 005.5 17.5h9A2.5 2.5 0 0017 15v-1.75a.75.75 0 00-1.5 0V15a1 1 0 01-1 1h-9a1 1 0 01-1-1v-1.75z" />
+                                                                                    </svg>
+                                                                                </span>
+                                                                                <span
+                                                                                    className="min-w-0 text-xs font-medium text-emerald-900 dark:text-emerald-100 truncate"
+                                                                                    title={
+                                                                                        attachment.name
+                                                                                    }
+                                                                                >
+                                                                                    {getAttachmentDisplayName(
+                                                                                        attachment,
+                                                                                    )}
+                                                                                </span>
+                                                                            </div>
+                                                                            <span className="text-[10px] font-semibold text-cyan-700 dark:text-cyan-300 shrink-0">
                                                                                 {formatFileSize(
                                                                                     attachment.size,
                                                                                 ) ||
@@ -2555,6 +1858,24 @@ export function SduiChat() {
                                                                     )}
                                                                 </div>
                                                             )}
+
+                                                        {isSduiDevMode && (
+                                                            <div className="mt-2">
+                                                                <SduiRawJsonBlock
+                                                                    title="Raw Message / Linked News / Permissions"
+                                                                    data={{
+                                                                        message,
+                                                                        linkedNews,
+                                                                        attachments:
+                                                                            messageAttachments,
+                                                                        permissions:
+                                                                            message?.can,
+                                                                        replyPreview:
+                                                                            replyReferencePreview,
+                                                                    }}
+                                                                />
+                                                            </div>
+                                                        )}
                                                     </div>
                                                 );
                                             })
@@ -2562,7 +1883,13 @@ export function SduiChat() {
                                         <div ref={messagesEndRef} />
                                     </main>
 
-                                    <footer className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3">
+                                    <footer
+                                        className={`border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 pt-3 ${
+                                            shouldCompactComposerSpacing
+                                                ? 'pb-3'
+                                                : 'pb-[calc(env(safe-area-inset-bottom)+0.75rem)]'
+                                        } md:p-3`}
+                                    >
                                         {!canWriteInSelectedChat && (
                                             <div className="mb-2 rounded-md border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-3 py-2 text-xs">
                                                 {oneWayDetected
@@ -2571,20 +1898,35 @@ export function SduiChat() {
                                             </div>
                                         )}
                                         {replyPreview && (
-                                            <div className="mb-2 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-3 py-2">
+                                            <div className="mb-2 rounded-xl border border-slate-200/90 dark:border-slate-700/80 bg-linear-to-br from-slate-50 via-slate-50 to-indigo-50/60 dark:from-slate-900/70 dark:via-slate-900/65 dark:to-indigo-950/20 px-3 py-2">
                                                 <div className="flex items-start justify-between gap-3">
-                                                    <div className="min-w-0">
-                                                        <div className="text-[11px] font-semibold text-blue-700 dark:text-blue-300">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            if (
+                                                                replyPreview.uuid
+                                                            ) {
+                                                                jumpToMessageByUuid(
+                                                                    replyPreview.uuid,
+                                                                );
+                                                            }
+                                                        }}
+                                                        className="min-w-0 text-left"
+                                                    >
+                                                        <div className="text-[11px] font-semibold text-slate-700 dark:text-slate-200">
                                                             Antwort an{' '}
                                                             {
                                                                 replyPreview.sender
                                                             }
+                                                            {replyPreview.uuid
+                                                                ? ' • Zum Original'
+                                                                : ''}
                                                         </div>
                                                         <div className="text-xs text-slate-700 dark:text-slate-200 line-clamp-2">
                                                             {replyPreview.text ||
                                                                 'Nachricht'}
                                                         </div>
-                                                    </div>
+                                                    </button>
                                                     <button
                                                         type="button"
                                                         onClick={() =>
@@ -2592,7 +1934,7 @@ export function SduiChat() {
                                                                 null,
                                                             )
                                                         }
-                                                        className="text-[11px] rounded-full border border-blue-300 dark:border-blue-700 px-2 py-0.5 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/40"
+                                                        className="text-[11px] rounded-full border border-slate-300 dark:border-slate-600 px-2 py-0.5 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/70"
                                                     >
                                                         Abbrechen
                                                     </button>
@@ -2608,6 +1950,12 @@ export function SduiChat() {
                                                 value={draft}
                                                 onChange={(e) =>
                                                     setDraft(e.target.value)
+                                                }
+                                                onFocus={() =>
+                                                    setIsComposerFocused(true)
+                                                }
+                                                onBlur={() =>
+                                                    setIsComposerFocused(false)
                                                 }
                                                 placeholder={
                                                     canWriteInSelectedChat
@@ -2647,7 +1995,7 @@ export function SduiChat() {
                         </section>
                     </>
                 ) : (
-                    <section className="flex-1 min-w-0 flex flex-col bg-slate-50 dark:bg-slate-950">
+                    <section className="flex-1 min-w-0 flex flex-col bg-slate-50 dark:bg-slate-950 sdui-animate-tab">
                         <header className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
                             <div className="relative">
                                 <input
@@ -2688,7 +2036,10 @@ export function SduiChat() {
                                     return (
                                         <article
                                             key={newsId}
-                                            className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm p-4"
+                                            className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm p-4 sdui-animate-stagger"
+                                            style={{
+                                                animationDelay: `${Math.min(index, 10) * 28}ms`,
+                                            }}
                                         >
                                             <div className="flex flex-wrap items-center gap-2">
                                                 <span className="rounded-full bg-blue-100 dark:bg-blue-900/40 px-2 py-0.5 text-xs font-semibold text-blue-700 dark:text-blue-300">
@@ -2803,6 +2154,15 @@ export function SduiChat() {
                                                             </button>
                                                         ),
                                                     )}
+                                                </div>
+                                            )}
+
+                                            {isSduiDevMode && (
+                                                <div className="mt-4">
+                                                    <SduiRawJsonBlock
+                                                        title="Raw News Item"
+                                                        data={news}
+                                                    />
                                                 </div>
                                             )}
                                         </article>
