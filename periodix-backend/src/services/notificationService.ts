@@ -4,113 +4,11 @@ import {
     fetchAbsencesFromUntis,
     storeAbsenceData,
 } from './untisService.js';
+import {
+    createCanonicalSignature,
+    groupLessonsForNotifications,
+} from './notificationLessonMerge.js';
 import webpush from 'web-push';
-
-// Lesson merging utilities for notifications
-/**
- * Check if two lessons can be merged for notification purposes
- * Based on the frontend merging logic but adapted for backend lesson format
- */
-function canMergeLessonsForNotifications(lesson1: any, lesson2: any): boolean {
-    // Check if subjects match
-    const subject1 = lesson1.su?.[0]?.name ?? lesson1.activityType ?? '';
-    const subject2 = lesson2.su?.[0]?.name ?? lesson2.activityType ?? '';
-    if (subject1 !== subject2) return false;
-
-    // Check if teachers match - use nullish coalescing to ensure arrays
-    const teacher1 = (lesson1.te ?? [])
-        .map((t: any) => t.name)
-        .sort()
-        .join(',');
-    const teacher2 = (lesson2.te ?? [])
-        .map((t: any) => t.name)
-        .sort()
-        .join(',');
-    if (teacher1 !== teacher2) return false;
-
-    // Check if rooms match - use nullish coalescing to ensure arrays
-    const room1 = (lesson1.ro ?? [])
-        .map((r: any) => r.name)
-        .sort()
-        .join(',');
-    const room2 = (lesson2.ro ?? [])
-        .map((r: any) => r.name)
-        .sort()
-        .join(',');
-    if (room1 !== room2) return false;
-
-    // Check if lesson codes match (both cancelled, both irregular, etc.)
-    if (lesson1.code !== lesson2.code) return false;
-
-    // Must be same date
-    if (lesson1.date !== lesson2.date) return false;
-
-    // Check if lessons are consecutive (5 minutes or less break)
-    // Helper to convert Untis HHmm format to minutes since midnight
-    const toMinutes = (hhmm: number) =>
-        Math.floor(hhmm / 100) * 60 + (hhmm % 100);
-    const lesson1EndMin = toMinutes(lesson1.endTime);
-    const lesson2StartMin = toMinutes(lesson2.startTime);
-    const breakMinutes = lesson2StartMin - lesson1EndMin;
-
-    // Merge if break is 5 minutes or less (including negative for overlapping)
-    return breakMinutes <= 5;
-}
-
-/**
- * Group consecutive lessons that can be merged for notification purposes
- * Returns arrays of lessons that should generate single notifications
- */
-function groupLessonsForNotifications(lessons: any[]): any[][] {
-    if (lessons.length <= 1) return lessons.map((l) => [l]);
-
-    // Sort lessons by date and start time - ensure numeric comparison
-    const sortedLessons = [...lessons].sort((a, b) => {
-        if (Number(a.date) !== Number(b.date))
-            return Number(a.date) - Number(b.date);
-        return Number(a.startTime) - Number(b.startTime);
-    });
-
-    const groups: any[][] = [];
-    let currentGroup = [sortedLessons[0]];
-
-    for (let i = 1; i < sortedLessons.length; i++) {
-        const currentLesson = currentGroup[currentGroup.length - 1];
-        const nextLesson = sortedLessons[i];
-
-        if (canMergeLessonsForNotifications(currentLesson, nextLesson)) {
-            // Add to current group
-            currentGroup.push(nextLesson);
-        } else {
-            // Start new group
-            groups.push(currentGroup);
-            currentGroup = [nextLesson];
-        }
-    }
-
-    // Add the last group
-    groups.push(currentGroup);
-
-    return groups;
-}
-
-/**
- * Create a canonical signature for dedupe keys when IDs are missing
- */
-function createCanonicalSignature(lesson: any): string {
-    const subject = lesson.su?.[0]?.name ?? lesson.activityType ?? 'unknown';
-    const teachers =
-        (lesson.te ?? [])
-            .map((t: any) => t.name)
-            .sort()
-            .join(',') || 'no-teacher';
-    const rooms =
-        (lesson.ro ?? [])
-            .map((r: any) => r.name)
-            .sort()
-            .join(',') || 'no-room';
-    return `${subject}:${teachers}:${rooms}`;
-}
 
 // Initialize web-push with VAPID keys
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY;

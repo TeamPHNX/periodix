@@ -13,18 +13,20 @@ import sharingRoutes from './routes/sharing.js';
 import accessRequestRoutes from './routes/accessRequest.js';
 import notificationRoutes from './routes/notifications.js';
 import analyticsRoutes from './routes/analytics.js';
+import sduiRoutes from './routes/sdui.js';
 
 dotenv.config();
 
 const app = express();
 
 const corsOriginEnv = process.env.CORS_ORIGIN;
+const isProduction = process.env.NODE_ENV === 'production';
 // Basic security headers
 app.use(
     helmet({
         crossOriginResourcePolicy: { policy: 'cross-origin' },
         contentSecurityPolicy: false, // can be enabled/tuned later
-    })
+    }),
 );
 // If running behind a proxy (Docker, reverse proxy), enable to get correct client IPs
 app.set('trust proxy', 1);
@@ -45,6 +47,25 @@ function normalizeOrigin(input: string): string {
         .replace(/^['"]|['"]$/g, '') // strip wrapping quotes
         .replace(/\/$/, '') // drop single trailing slash
         .toLowerCase();
+}
+
+if (isProduction) {
+    if (!corsOriginEnv?.trim()) {
+        throw new Error(
+            'CORS_ORIGIN must be explicitly configured in production',
+        );
+    }
+
+    const hasWildcard = corsOriginEnv
+        .split(/[\s,]+/)
+        .map((entry) => normalizeOrigin(entry))
+        .some((entry) => entry === '*');
+
+    if (hasWildcard) {
+        throw new Error(
+            'CORS_ORIGIN wildcard (*) is not allowed in production',
+        );
+    }
 }
 
 interface OriginRule {
@@ -146,5 +167,6 @@ app.use('/api/sharing', sharingRoutes);
 app.use('/api/access-request', accessRequestRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/sdui', sduiRoutes);
 
 export default app;

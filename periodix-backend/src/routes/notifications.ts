@@ -25,9 +25,8 @@ router.get('/', authMiddleware, async (req, res) => {
         });
 
         res.json({ notifications });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to fetch notifications';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({ error: 'Failed to fetch notifications' });
     }
 });
 
@@ -47,9 +46,10 @@ router.patch('/read-all', authMiddleware, async (req, res) => {
         });
 
         res.json({ success: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to mark all notifications as read';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({
+            error: 'Failed to mark all notifications as read',
+        });
     }
 });
 
@@ -87,9 +87,10 @@ router.get('/settings', authMiddleware, async (req, res) => {
         }
 
         res.json({ settings });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to fetch notification settings';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({
+            error: 'Failed to fetch notification settings',
+        });
     }
 });
 
@@ -128,9 +129,10 @@ router.put('/settings', authMiddleware, async (req, res) => {
         });
 
         res.json({ settings, success: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to update notification settings';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({
+            error: 'Failed to update notification settings',
+        });
     }
 });
 
@@ -194,9 +196,8 @@ router.post('/subscribe', authMiddleware, async (req, res) => {
         });
 
         res.json({ subscription, success: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to create push subscription';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({ error: 'Failed to create push subscription' });
     }
 });
 
@@ -236,9 +237,8 @@ router.delete('/subscribe', authMiddleware, async (req, res) => {
             data: { active: false },
         });
         res.json({ success: true, method: 'query' });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to unsubscribe (query)';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({ error: 'Failed to unsubscribe (query)' });
     }
 });
 
@@ -281,9 +281,8 @@ router.patch('/:id/read', authMiddleware, async (req, res) => {
             data: { read: true },
         });
         res.json({ success: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to mark notification as read';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({ error: 'Failed to mark notification as read' });
     }
 });
 
@@ -309,8 +308,7 @@ router.delete('/:id', authMiddleware, async (req, res) => {
             data: { expiresAt: new Date(), read: true },
         });
         res.json({ success: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to delete notification';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({ error: 'Failed to delete notification' });
     }
 });

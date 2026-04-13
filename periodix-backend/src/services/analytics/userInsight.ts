@@ -6,7 +6,7 @@ import type { UserInsightSummary } from './types.js';
  * feature usage distribution (last 30 days), session average (today), and recent activities.
  */
 export async function getUserInsight(
-    userId: string
+    userId: string,
 ): Promise<UserInsightSummary | null> {
     const user = await prisma.user.findUnique({
         where: { id: userId },
@@ -78,15 +78,16 @@ export async function getUserInsight(
         _count: { action: true },
     });
     const totalFeature =
-        featureAggregation.reduce((s, r) => s + r._count.action, 0) || 1;
+        featureAggregation.reduce((s: any, r: any) => s + r._count.action, 0) ||
+        1;
     const featureUsage = featureAggregation
-        .map((r) => ({
+        .map((r: any) => ({
             feature: r.action,
             count: r._count.action,
             percentage:
                 Math.round((r._count.action / totalFeature) * 1000) / 10,
         }))
-        .sort((a, b) => b.count - a.count)
+        .sort((a: any, b: any) => b.count - a.count)
         .slice(0, 25);
 
     // Recent activities (last 20)

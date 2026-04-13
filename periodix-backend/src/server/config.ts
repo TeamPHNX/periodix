@@ -21,6 +21,7 @@ function requireEnv(name: string): string {
 // These are required for WebUntis interactions
 export const UNTIS_DEFAULT_SCHOOL: string = requireEnv('UNTIS_DEFAULT_SCHOOL');
 export const UNTIS_HOST: string = requireEnv('UNTIS_HOST');
+export const JWT_SECRET: string = requireEnv('JWT_SECRET');
 
 // Admin credentials are optional; default to empty strings
 export const ADMIN_USERNAME: string = process.env.PERIODIX_ADMIN_USERNAME || '';
@@ -31,5 +32,5 @@ export const WHITELIST_ENABLED: boolean =
     process.env.WHITELIST_ENABLED === 'true';
 
 // Timezone for lesson notifications (defaults to Europe/Berlin for German schools)
-export const NOTIFICATION_TIMEZONE: string = 
+export const NOTIFICATION_TIMEZONE: string =
     process.env.NOTIFICATION_TIMEZONE || 'Europe/Berlin';

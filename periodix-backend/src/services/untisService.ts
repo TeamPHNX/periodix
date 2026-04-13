@@ -4,6 +4,13 @@ import { decryptSecret } from '../server/crypto.js';
 import { UNTIS_DEFAULT_SCHOOL, UNTIS_HOST } from '../server/config.js';
 import { AppError } from '../server/errors.js';
 import { Prisma } from '@prisma/client';
+import {
+    endOfDay,
+    endOfISOWeek,
+    normalizeRange,
+    startOfDay,
+    startOfISOWeek,
+} from './untisDateUtils.js';
 
 // ---------------------------------------------------------------------------
 // Timetable caching strategy
@@ -68,48 +75,6 @@ let lastCleanupRun = 0; // In‑memory marker; acceptable for single process / e
 let lastClassCleanupRun = 0; // Separate throttling for class timetable cache pruning
 
 type TimetableFallbackReason = 'UNTIS_UNAVAILABLE' | 'BAD_CREDENTIALS';
-
-function startOfDay(d: Date) {
-    const nd = new Date(d);
-    nd.setHours(0, 0, 0, 0);
-    return nd;
-}
-
-function endOfDay(d: Date) {
-    const nd = new Date(d);
-    nd.setHours(23, 59, 59, 999);
-    return nd;
-}
-
-function startOfISOWeek(date: Date) {
-    const d = startOfDay(date);
-    // ISO week starts Monday (1); JS Sunday = 0
-    const day = d.getDay();
-    const diff = day === 0 ? -6 : 1 - day; // shift to Monday
-    d.setDate(d.getDate() + diff);
-    return d;
-}
-
-function endOfISOWeek(date: Date) {
-    const start = startOfISOWeek(date);
-    const end = new Date(start);
-    end.setDate(start.getDate() + 6);
-    return endOfDay(end);
-}
-
-function normalizeRange(start?: string, end?: string) {
-    if (!start || !end) return { normStart: undefined, normEnd: undefined };
-    // Treat ranges spanning a full week the same by snapping to ISO week
-    const sd = new Date(start);
-    const ed = new Date(end);
-    // If the provided range length >= 5 days we assume week intentions and snap
-    const spanMs = ed.getTime() - sd.getTime();
-    if (spanMs >= 5 * 24 * 60 * 60 * 1000) {
-        return { normStart: startOfISOWeek(sd), normEnd: endOfISOWeek(sd) };
-    }
-    // Otherwise just normalize to day bounds
-    return { normStart: startOfDay(sd), normEnd: endOfDay(ed) };
-}
 
 async function pruneOldTimetables() {
     const now = Date.now();

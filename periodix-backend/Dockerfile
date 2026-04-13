@@ -10,7 +10,7 @@ RUN apt-get update \
 # Copy manifests and install deps
 COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* ./
 # Prefer clean reproducible install (npm ci) but fall back to npm install if lockfile out of sync
-RUN if [ -f package-lock.json ]; then (npm ci || (echo '[Dockerfile] npm ci failed (likely lock mismatch) falling back to npm install' && npm install)); \
+RUN npm config set strict-ssl false && if [ -f package-lock.json ]; then (npm ci || (echo '[Dockerfile] npm ci failed (likely lock mismatch) falling back to npm install' && npm install)); \
     elif [ -f pnpm-lock.yaml ]; then npm i -g pnpm && pnpm i --frozen-lockfile; \
     elif [ -f yarn.lock ]; then npm i -g yarn && yarn install --frozen-lockfile; \
     else npm i; fi

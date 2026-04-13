@@ -24,6 +24,7 @@ import {
 } from '../utils/dates';
 import { setLessonColor } from '../api';
 import { isMobileViewport, MOBILE_MEDIA_QUERY } from '../utils/responsive';
+import { useDeveloperModeFlag } from '../hooks/useDeveloperModeFlag';
 import LessonModal from './LessonModal';
 import HolidayModal from './HolidayModal';
 import TimeAxis from './TimeAxis';
@@ -152,73 +153,12 @@ export default function Timetable({
     useEffect(() => {
         isDayDraggingRef.current = isDayDragging;
     }, [isDayDragging]);
-
-    // Developer mode visibility (controlled by env, query param, or persisted localStorage flag)
-    const envDevFlag =
-        String(import.meta.env.VITE_ENABLE_DEVELOPER_MODE ?? '')
-            .trim()
-            .toLowerCase() === 'true';
-    const queryDevFlag =
-        typeof window !== 'undefined'
-            ? (() => {
-                  try {
-                      const v = new URLSearchParams(window.location.search).get(
-                          'dev',
-                      );
-                      return (
-                          !!v &&
-                          ['1', 'true', 'yes', 'on'].includes(v.toLowerCase())
-                      );
-                  } catch {
-                      return false;
-                  }
-              })()
-            : false;
-    // Only allow toggle if env flag OR query param present right now (no localStorage persistence of visibility)
-    const isDeveloperModeEnabled = envDevFlag || queryDevFlag;
-    const [isDeveloperMode, setIsDeveloperMode] = useState<boolean>(() => {
-        if (typeof window === 'undefined') return false;
-        try {
-            return localStorage.getItem('PeriodixDevActive') === '1';
-        } catch {
-            return false;
-        }
-    });
-
-    // Debug instrumentation flag (enabled if developer mode OR explicit debug query ?ttdebug=1)
-    const isDebug = (() => {
-        if (typeof window === 'undefined') return false;
-        try {
-            const q = new URLSearchParams(window.location.search);
-            return (
-                isDeveloperMode ||
-                ['1', 'true', 'yes'].includes(
-                    (q.get('ttdebug') || '').toLowerCase(),
-                )
-            );
-        } catch {
-            return isDeveloperMode;
-        }
-    })();
-
-    // Persist active developer mode toggle state
-    useEffect(() => {
-        try {
-            localStorage.setItem(
-                'PeriodixDevActive',
-                isDeveloperMode ? '1' : '0',
-            );
-        } catch {
-            /* ignore */
-        }
-    }, [isDeveloperMode]);
-
-    // If toggle becomes unavailable (env off & no query), ensure dev mode not active to avoid confusing hidden state
-    useEffect(() => {
-        if (!isDeveloperModeEnabled && isDeveloperMode) {
-            setIsDeveloperMode(false);
-        }
-    }, [isDeveloperModeEnabled, isDeveloperMode]);
+    const {
+        isDeveloperModeEnabled,
+        isDeveloperMode,
+        setIsDeveloperMode,
+        isDebug,
+    } = useDeveloperModeFlag();
     const [selectedLesson, setSelectedLesson] = useState<Lesson | null>(null);
     const [selectedGroup, setSelectedGroup] = useState<Lesson[] | null>(null);
     const [selectedIndexInGroup, setSelectedIndexInGroup] = useState<number>(0);
