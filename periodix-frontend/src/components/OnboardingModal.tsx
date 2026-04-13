@@ -1,6 +1,12 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import React from 'react';
+import {
+    LESSON_MODAL_STEPS,
+    ONBOARDING_STEPS,
+    SETTINGS_MODAL_STEPS,
+    type OnboardingStep,
+} from './onboarding/onboardingSteps';
 
 // Extend the Window interface for our global functions
 declare global {
@@ -8,27 +14,6 @@ declare global {
         onboardingLessonModalStateChange?: (isOpen: boolean) => void;
         resetOnboarding?: () => void;
     }
-}
-
-interface OnboardingStep {
-    title: string;
-    description: string;
-    image?: string;
-    icon: React.ReactNode;
-    target?: string; // CSS selector for element to highlight
-    position?: 'top' | 'bottom' | 'left' | 'right' | 'center';
-    demoType?:
-        | 'highlight'
-        | 'click'
-        | 'type'
-        | 'point'
-        | 'interactive-settings'
-        | 'interactive-lesson'
-        | 'modal-lesson'
-        | 'modal-settings';
-    requiresInteraction?: boolean; // Whether to wait for user interaction
-    interactionCompleted?: boolean; // Track if interaction is done
-    modalStep?: boolean; // Whether this step appears inside a modal
 }
 
 export default function OnboardingModal({
@@ -66,233 +51,9 @@ export default function OnboardingModal({
 
     const ANIM_MS = 200;
 
-    // Modal-specific onboarding steps wrapped in useMemo for dependency optimization
-    const lessonModalSteps: OnboardingStep[] = useMemo(
-        () => [
-            {
-                title: 'Lesson Details',
-                description:
-                    'Here you can see detailed information about this lesson, including teacher names, room locations, and any additional notes.',
-                modalStep: true,
-                demoType: 'modal-lesson',
-                target: '.lesson-details, .lesson-info',
-                position: 'center',
-                icon: (
-                    <svg
-                        className="w-12 h-12 text-indigo-500"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                    >
-                        <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="1.5"
-                            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                        />
-                    </svg>
-                ),
-            },
-            {
-                title: 'Customize Color',
-                description:
-                    'Use the color picker below to customize the appearance of this lesson in your timetable. Choose from predefined colors or create your own custom color.',
-                modalStep: true,
-                demoType: 'modal-lesson',
-                target: '.color-picker, [data-color-picker], .customize-color',
-                position: 'center',
-                icon: (
-                    <svg
-                        className="w-12 h-12 text-purple-500"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                    >
-                        <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="1.5"
-                            d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zM21 5a2 2 0 00-2-2h-4a2 2 0 00-2 2v6a2 2 0 002 2h4a2 2 0 002-2V5z"
-                        />
-                    </svg>
-                ),
-            },
-        ],
-        []
-    );
-
-    const settingsModalSteps: OnboardingStep[] = useMemo(
-        () => [
-            {
-                title: 'Profile Settings',
-                description:
-                    'Customize your display name, sharing preferences, and notification settings. These settings help you personalize your Periodix experience.',
-                modalStep: true,
-                demoType: 'modal-settings',
-                target: '.settings-section, .profile-settings',
-                position: 'center',
-                icon: (
-                    <svg
-                        className="w-12 h-12 text-amber-500"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                    >
-                        <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="1.5"
-                            d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-                        />
-                    </svg>
-                ),
-            },
-            {
-                title: 'Sharing & Privacy',
-                description:
-                    'Control who can see your timetable and manage your privacy settings. You can share with specific users or enable global sharing.',
-                modalStep: true,
-                demoType: 'modal-settings',
-                target: '.sharing-settings, .privacy-settings',
-                position: 'center',
-                icon: (
-                    <svg
-                        className="w-12 h-12 text-emerald-500"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                    >
-                        <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="1.5"
-                            d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
-                        />
-                    </svg>
-                ),
-            },
-            {
-                title: 'Notifications',
-                description:
-                    'Configure your notification preferences to stay updated with important timetable changes and announcements.',
-                modalStep: true,
-                demoType: 'modal-settings',
-                target: '.notification-settings, .notifications-section',
-                position: 'center',
-                icon: (
-                    <svg
-                        className="w-12 h-12 text-sky-500"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                    >
-                        <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="1.5"
-                            d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
-                        />
-                    </svg>
-                ),
-            },
-        ],
-        []
-    );
-
-    const steps: OnboardingStep[] = [
-        {
-            title: 'Welcome to Periodix!',
-            description:
-                "Let's take a quick tour of the key features that will help you manage your timetable more effectively.",
-            position: 'center',
-            icon: (
-                <svg
-                    className="w-12 h-12 text-sky-500"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                >
-                    <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="1.5"
-                        d="M12 3v18m9-9H3"
-                    />
-                </svg>
-            ),
-        },
-        {
-            title: 'Explore Lessons & Customize Colors',
-            description:
-                'Click on any lesson in your timetable to see detailed information, including teacher names, room locations, and customize its color. Go ahead - try clicking on a lesson now!',
-            target: '.timetable-lesson',
-            position: 'right',
-            demoType: 'interactive-lesson',
-            requiresInteraction: true,
-            icon: (
-                <svg
-                    className="w-12 h-12 text-purple-500"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                >
-                    <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="1.5"
-                        d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zM21 5a2 2 0 00-2-2h-4a2 2 0 00-2 2v6a2 2 0 002 2h4a2 2 0 002-2V5z"
-                    />
-                </svg>
-            ),
-        },
-        {
-            title: 'Share & View Timetables',
-            description:
-                "Use the search feature to find and view other students' timetables. Perfect for coordinating study groups or finding shared free periods. The search bar is located at the top of the page.",
-            target: 'input[placeholder*="Student"], #mobile-search-input',
-            position: 'bottom',
-            demoType: 'highlight',
-            icon: (
-                <svg
-                    className="w-12 h-12 text-emerald-500"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                >
-                    <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="1.5"
-                        d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
-                    />
-                </svg>
-            ),
-        },
-        {
-            title: 'Personalize Your Profile',
-            description:
-                'Click the settings icon in the top right to explore your profile settings and customization options. Try opening the settings now!',
-            target: 'button[title="Settings"], button[aria-label="Settings"]',
-            position: 'bottom',
-            demoType: 'interactive-settings',
-            requiresInteraction: true,
-            icon: (
-                <svg
-                    className="w-12 h-12 text-amber-500"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                >
-                    <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="1.5"
-                        d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-                    />
-                </svg>
-            ),
-        },
-    ];
+    const lessonModalSteps = LESSON_MODAL_STEPS;
+    const settingsModalSteps = SETTINGS_MODAL_STEPS;
+    const steps = ONBOARDING_STEPS;
 
     useEffect(() => {
         let t: number | undefined;
@@ -380,7 +141,7 @@ export default function OnboardingModal({
         if (onLessonModalStateChange) {
             onLessonModalStateChange(
                 waitingForInteraction &&
-                    currentStepData.demoType === 'interactive-lesson'
+                    currentStepData.demoType === 'interactive-lesson',
             );
         }
     }, [waitingForInteraction, currentStepData, onLessonModalStateChange]);
@@ -507,7 +268,7 @@ export default function OnboardingModal({
             currentStep,
             steps.length,
             inModalOnboarding,
-        ]
+        ],
     );
 
     // Expose the handler via a global method that can be called by Timetable
@@ -556,7 +317,7 @@ export default function OnboardingModal({
                 ) {
                     // Try to find any visible lesson that's not too small or clipped
                     const lessons = Array.from(
-                        document.querySelectorAll('.timetable-lesson')
+                        document.querySelectorAll('.timetable-lesson'),
                     );
                     for (const lesson of lessons) {
                         const rect = lesson.getBoundingClientRect();
@@ -588,7 +349,7 @@ export default function OnboardingModal({
                     // For other elements, use normal querySelector
                     if (currentStepData.target) {
                         element = document.querySelector(
-                            currentStepData.target
+                            currentStepData.target,
                         );
                     }
                 }
@@ -1049,26 +810,28 @@ export default function OnboardingModal({
                     'useMobileBottom' in modalPosition
                         ? 'fixed inset-x-0 bottom-0 flex items-end'
                         : 'useCenter' in modalPosition
-                        ? 'grid place-items-center inset-0'
-                        : 'absolute'
+                          ? 'grid place-items-center inset-0'
+                          : 'absolute'
                 } ${
                     waitingForInteraction &&
                     currentStepData.demoType === 'interactive-lesson' &&
                     !hasInteracted
                         ? 'opacity-90'
                         : waitingForInteraction &&
-                          currentStepData.demoType === 'interactive-lesson' &&
-                          hasInteracted
-                        ? 'opacity-95'
-                        : waitingForInteraction &&
-                          currentStepData.demoType === 'interactive-settings' &&
-                          !hasInteracted
-                        ? 'opacity-90'
-                        : waitingForInteraction &&
-                          currentStepData.demoType === 'interactive-settings' &&
-                          hasInteracted
-                        ? 'opacity-95'
-                        : 'opacity-100'
+                            currentStepData.demoType === 'interactive-lesson' &&
+                            hasInteracted
+                          ? 'opacity-95'
+                          : waitingForInteraction &&
+                              currentStepData.demoType ===
+                                  'interactive-settings' &&
+                              !hasInteracted
+                            ? 'opacity-90'
+                            : waitingForInteraction &&
+                                currentStepData.demoType ===
+                                    'interactive-settings' &&
+                                hasInteracted
+                              ? 'opacity-95'
+                              : 'opacity-100'
                 } ${
                     waitingForInteraction &&
                     (currentStepData.demoType === 'interactive-lesson' ||
@@ -1079,7 +842,7 @@ export default function OnboardingModal({
                 style={
                     !('useCenter' in modalPosition) &&
                     !('useMobileBottom' in modalPosition)
-                        ? (modalPosition as React.CSSProperties)
+                        ? (modalPosition as CSSProperties)
                         : {}
                 }
             >
@@ -1214,23 +977,23 @@ export default function OnboardingModal({
                                         ? 'Continue main tour'
                                         : 'Next'
                                     : waitingForInteraction
-                                    ? currentStepData.demoType ===
-                                      'interactive-settings'
-                                        ? hasInteracted
-                                            ? 'Waiting for you to close settings...'
-                                            : 'Click the settings icon above!'
-                                        : hasInteracted
-                                        ? 'Waiting for you to close the lesson...'
-                                        : 'Click on a lesson above!'
-                                    : isLastStep
-                                    ? 'Get Started!'
-                                    : 'Next'}
+                                      ? currentStepData.demoType ===
+                                        'interactive-settings'
+                                          ? hasInteracted
+                                              ? 'Waiting for you to close settings...'
+                                              : 'Click the settings icon above!'
+                                          : hasInteracted
+                                            ? 'Waiting for you to close the lesson...'
+                                            : 'Click on a lesson above!'
+                                      : isLastStep
+                                        ? 'Get Started!'
+                                        : 'Next'}
                             </button>
                         </div>
                     </div>
                 </div>
             </div>
         </div>,
-        document.body
+        document.body,
     );
 }

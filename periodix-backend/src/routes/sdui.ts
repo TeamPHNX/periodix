@@ -273,14 +273,20 @@ router.post('/chats/:chatId/messages', authMiddleware, async (req, res) => {
         if (!user?.sduiAccessToken)
             return res.status(401).json({ error: 'SDUI not authenticated' });
 
-        const text =
+        const contentFromBody =
+            typeof req.body?.content === 'string'
+                ? req.body.content.trim()
+                : '';
+        const textFromBody =
             typeof req.body?.text === 'string' ? req.body.text.trim() : '';
-        if (!text)
+        const content = contentFromBody || textFromBody;
+
+        if (!content)
             return res.status(400).json({ error: 'Missing text content' });
 
         const sdui = SduiClient.fromAccessToken(user.sduiAccessToken);
         // SDUI API payload for sending messages
-        const result = await sdui.sendChatMessage(chatId, { content: text });
+        const result = await sdui.sendChatMessage(chatId, { content });
 
         res.json(result);
     } catch (e: any) {
@@ -288,5 +294,144 @@ router.post('/chats/:chatId/messages', authMiddleware, async (req, res) => {
         res.status(500).json({ error: e?.message || 'Failed to send message' });
     }
 });
+
+router.post(
+    '/chats/:chatId/messages/:replyUuid/reply',
+    authMiddleware,
+    async (req, res) => {
+        try {
+            if (!req.user?.id)
+                return res.status(401).json({ error: 'Unauthorized' });
+
+            const chatId = req.params.chatId;
+            const replyUuid = req.params.replyUuid;
+            if (!chatId)
+                return res.status(400).json({ error: 'Missing chatId' });
+            if (!replyUuid)
+                return res.status(400).json({ error: 'Missing replyUuid' });
+
+            const user = await prisma.user.findUnique({
+                where: { id: req.user.id },
+            });
+            if (!user?.sduiAccessToken)
+                return res
+                    .status(401)
+                    .json({ error: 'SDUI not authenticated' });
+
+            const contentFromBody =
+                typeof req.body?.content === 'string'
+                    ? req.body.content.trim()
+                    : '';
+            const textFromBody =
+                typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+            const content = contentFromBody || textFromBody;
+
+            if (!content)
+                return res.status(400).json({ error: 'Missing text content' });
+
+            const sdui = SduiClient.fromAccessToken(user.sduiAccessToken);
+            const result = await (sdui as any).replyToChatMessage(
+                chatId,
+                replyUuid,
+                { content },
+            );
+
+            res.json(result);
+        } catch (e: any) {
+            console.error('Reply message err:', e);
+            res.status(500).json({
+                error: e?.message || 'Failed to send reply message',
+            });
+        }
+    },
+);
+
+router.delete(
+    '/chats/:chatId/messages/:messageUuid',
+    authMiddleware,
+    async (req, res) => {
+        try {
+            if (!req.user?.id)
+                return res.status(401).json({ error: 'Unauthorized' });
+
+            const chatId = req.params.chatId;
+            const messageUuid = req.params.messageUuid;
+            if (!chatId)
+                return res.status(400).json({ error: 'Missing chatId' });
+            if (!messageUuid)
+                return res.status(400).json({ error: 'Missing messageUuid' });
+
+            const user = await prisma.user.findUnique({
+                where: { id: req.user.id },
+            });
+            if (!user?.sduiAccessToken)
+                return res
+                    .status(401)
+                    .json({ error: 'SDUI not authenticated' });
+
+            const sdui = SduiClient.fromAccessToken(user.sduiAccessToken);
+            const result = await (sdui as any).deleteChatMessage(
+                chatId,
+                messageUuid,
+            );
+
+            res.json(result);
+        } catch (e: any) {
+            console.error('Delete message err:', e);
+            res.status(500).json({
+                error: e?.message || 'Failed to delete message',
+            });
+        }
+    },
+);
+
+router.get(
+    '/chats/:chatId/messages/:messageUuid/readers',
+    authMiddleware,
+    async (req, res) => {
+        try {
+            if (!req.user?.id)
+                return res.status(401).json({ error: 'Unauthorized' });
+
+            const chatId = req.params.chatId;
+            const messageUuid = req.params.messageUuid;
+            if (!chatId)
+                return res.status(400).json({ error: 'Missing chatId' });
+            if (!messageUuid)
+                return res.status(400).json({ error: 'Missing messageUuid' });
+
+            const page = Number.parseInt(String(req.query.page ?? '1'), 10);
+
+            const user = await prisma.user.findUnique({
+                where: { id: req.user.id },
+            });
+            if (!user?.sduiAccessToken)
+                return res
+                    .status(401)
+                    .json({ error: 'SDUI not authenticated' });
+
+            const sdui = SduiClient.fromAccessToken(user.sduiAccessToken);
+            const readers = await (sdui as any).getMessageReaders(
+                chatId,
+                messageUuid,
+                {
+                    page: Number.isNaN(page) ? 1 : Math.max(1, page),
+                },
+            );
+
+            let readerList = readers;
+            if ((readers as any)?.data) {
+                readerList = (readers as any).data;
+            }
+
+            res.json(readerList);
+        } catch (e: any) {
+            console.error('Fetch message readers err:', e);
+            res.status(500).json({
+                error: e?.message || 'Failed to fetch message readers',
+            });
+        }
+    },
+);
 
 export default router;

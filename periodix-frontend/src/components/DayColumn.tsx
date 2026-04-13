@@ -2085,7 +2085,7 @@ const ResponsiveTimeFrame: FC<{
         meas.textContent = `${fmtHM(startMin)}–${fmtHM(endMin)}`;
         document.body.appendChild(meas);
 
-        let frame = 0;
+        const frame = 0;
 
         const compute = (immediate = false) => {
             try {

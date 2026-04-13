@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import React, {
     useCallback,
     useEffect,
@@ -5,18 +6,22 @@ import React, {
     useRef,
     useState,
 } from 'react';
+import { SduiMessageActionsMenu } from './SduiMessageActionsMenu';
+import { SduiDeleteConfirmModal } from './SduiDeleteConfirmModal';
+import { SduiMessageInfoModal } from './SduiMessageInfoModal';
+import {
+    extractImageUrls,
+    extractMessageAttachments,
+    formatFileSize,
+    getAttachmentDisplayName,
+    looksLikeAttachmentPathText,
+    type SduiAttachment,
+} from './sduiAttachmentUtils';
+import { renderTextWithLinks } from './sduiLinkText';
 
 type SduiChatItem = any;
 type SduiMessage = any;
 type SduiNews = any;
-
-type SduiAttachment = {
-    url: string;
-    name: string;
-    mime: string;
-    size: number | null;
-    isImage: boolean;
-};
 
 const ACTION_MESSAGE_MAP: Record<string, string> = {
     'news.posted': 'News wurde in dieser Gruppe geteilt.',
@@ -30,6 +35,16 @@ const ACTION_MESSAGE_MAP: Record<string, string> = {
     'chat.unpinned': 'Chat wurde entpinnt.',
 };
 
+const ACTION_KEY_PREFIXES = [
+    'news.',
+    'users.',
+    'channel.',
+    'chat.',
+    'message.',
+    'member.',
+    'conversation.',
+];
+
 function normalizeArrayResponse(input: any): any[] {
     if (Array.isArray(input)) return input;
     if (Array.isArray(input?.data)) return input.data;
@@ -37,7 +52,21 @@ function normalizeArrayResponse(input: any): any[] {
 }
 
 function isActionKey(value: string): boolean {
-    return /^[a-z_]+(\.[a-z_]+)+$/i.test(value);
+    const normalized = value.trim();
+    if (!normalized) return false;
+    if (!/^[a-z_]+(\.[a-z_]+)+$/i.test(normalized)) return false;
+
+    const lowered = normalized.toLowerCase();
+    if (
+        /\.(png|jpe?g|gif|webp|avif|svg|pdf|docx?|xlsx?|pptx?|txt|zip)$/.test(
+            lowered,
+        )
+    ) {
+        return false;
+    }
+
+    if (ACTION_MESSAGE_MAP[lowered]) return true;
+    return ACTION_KEY_PREFIXES.some((prefix) => lowered.startsWith(prefix));
 }
 
 function stripHtml(input: string): string {
@@ -58,462 +87,6 @@ function normalizeMessageText(raw: unknown): string {
     return trimmed;
 }
 
-function normalizeImageUrl(url: string): string {
-    if (url.startsWith('/')) return `https://api.sdui.app${url}`;
-    if (url.startsWith('//')) return `https:${url}`;
-    return url;
-}
-
-function getImageFingerprint(url: string): string {
-    try {
-        const parsed = new URL(url, 'https://api.sdui.app');
-        const pathname = parsed.pathname.toLowerCase();
-
-        const uuidMatch = pathname.match(
-            /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
-        );
-        if (uuidMatch?.[0]) {
-            return `uuid:${uuidMatch[0].toLowerCase()}`;
-        }
-
-        const longIdMatch = pathname.match(/[0-9a-f]{24,}/i);
-        if (longIdMatch?.[0]) {
-            return `hex:${longIdMatch[0].toLowerCase()}`;
-        }
-
-        const baseName = pathname
-            .split('/')
-            .pop()
-            ?.replace(/\.[a-z0-9]+$/i, '')
-            .replace(
-                /([_-])(small|thumb|thumbnail|preview|large|medium)$/i,
-                '',
-            );
-
-        return `${parsed.origin}${pathname}|${baseName || ''}`;
-    } catch {
-        const clean = url.split('?')[0].split('#')[0].toLowerCase();
-        return clean.replace(
-            /([_-])(small|thumb|thumbnail|preview|large|medium)(\.[a-z0-9]+)?$/i,
-            '$3',
-        );
-    }
-}
-
-function addImageUrl(bucket: Map<string, string>, candidate: string): void {
-    const normalized = normalizeImageUrl(candidate.trim());
-    if (!normalized) return;
-    if (/placeholder|blank|dummy/i.test(normalized)) return;
-    const fingerprint = getImageFingerprint(normalized);
-    if (!bucket.has(fingerprint)) {
-        bucket.set(fingerprint, normalized);
-    }
-}
-
-function extractImageUrls(source: any): string[] {
-    const urls = new Map<string, string>();
-
-    const htmlCandidates = [
-        source?.content_rendered,
-        source?.content,
-        source?.text,
-        source?.description,
-        source?.preview,
-    ];
-
-    for (const html of htmlCandidates) {
-        if (typeof html !== 'string') continue;
-        const regex = /<img[^>]+src=["']([^"']+)["']/gi;
-        let match: RegExpExecArray | null;
-        while ((match = regex.exec(html)) !== null) {
-            if (match[1]) addImageUrl(urls, match[1]);
-        }
-    }
-
-    const directCandidates = [
-        source?.image,
-        source?.image_url,
-        source?.preview_image,
-        source?.meta?.image,
-        source?.meta?.image_url,
-    ];
-
-    for (const candidate of directCandidates) {
-        if (typeof candidate === 'string' && candidate.trim()) {
-            addImageUrl(urls, candidate);
-        }
-    }
-
-    const mediaArrays = [source?.attachments, source?.files, source?.media];
-    for (const list of mediaArrays) {
-        if (!Array.isArray(list)) continue;
-        for (const item of list) {
-            const itemUrl =
-                item?.url || item?.src || item?.image || item?.preview;
-            if (typeof itemUrl === 'string' && itemUrl.trim()) {
-                addImageUrl(urls, itemUrl);
-            }
-        }
-    }
-
-    const walk = (node: any, depth = 0) => {
-        if (!node || depth > 6) return;
-
-        if (Array.isArray(node)) {
-            for (const item of node) walk(item, depth + 1);
-            return;
-        }
-
-        if (typeof node !== 'object') return;
-
-        const mime =
-            typeof node?.mime === 'string'
-                ? node.mime
-                : typeof node?.mimetype === 'string'
-                  ? node.mimetype
-                  : '';
-        const isImageMime = mime.toLowerCase().startsWith('image/');
-
-        for (const [key, value] of Object.entries(node)) {
-            if (typeof value === 'string') {
-                const candidate = value.trim();
-                if (!candidate) continue;
-
-                const looksLikeImageByKey =
-                    /(image|thumbnail|preview|avatar)/i.test(key);
-                const looksLikeImageByUrl =
-                    /\.(png|jpe?g|gif|webp|avif|svg)(\?|$)/i.test(candidate) ||
-                    /\/image(s)?\//i.test(candidate);
-
-                if (isImageMime || looksLikeImageByKey || looksLikeImageByUrl) {
-                    addImageUrl(urls, candidate);
-                }
-            } else if (typeof value === 'object' && value !== null) {
-                walk(value, depth + 1);
-            }
-        }
-    };
-
-    walk(source);
-
-    return Array.from(urls.values());
-}
-
-function getFileNameFromUrl(url: string): string {
-    try {
-        const parsed = new URL(url, 'https://api.sdui.app');
-        const rawName = parsed.pathname.split('/').pop() || 'Datei';
-        return decodeURIComponent(rawName);
-    } catch {
-        const rawName =
-            url.split('?')[0].split('#')[0].split('/').pop() || 'Datei';
-        try {
-            return decodeURIComponent(rawName);
-        } catch {
-            return rawName;
-        }
-    }
-}
-
-function isImageFile(mime: string, url: string, name: string): boolean {
-    if (mime.toLowerCase().startsWith('image/')) return true;
-    const urlValue = `${url}`.toLowerCase();
-    if (/\.(png|jpe?g|gif|webp|avif|svg)(\?|$)/i.test(urlValue)) return true;
-    return /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(name.trim());
-}
-
-function formatFileSize(bytes: number | null): string {
-    if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return '';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function isLikelyAttachmentPath(path: string): boolean {
-    return /(^|\.|\[)(attachment|attachments|file|files|upload|uploads|document|documents|chat_attachments?)(\.|\[|$)/i.test(
-        path,
-    );
-}
-
-function isSupportedAttachmentUrl(value: string): boolean {
-    const candidate = value.trim();
-    if (!candidate) return false;
-    if (!/^https?:\/\//i.test(candidate) && !candidate.startsWith('/')) {
-        return false;
-    }
-
-    const lowered = candidate.toLowerCase();
-    if (lowered === '/download' || lowered === 'download') return false;
-    return true;
-}
-
-function hasFilenameExtension(name: string): boolean {
-    return /\.[a-z0-9]{2,8}$/i.test(name.trim());
-}
-
-function isGenericDerivedFileName(name: string): boolean {
-    const normalized = name.trim().toLowerCase();
-    if (!normalized) return true;
-    if (normalized === 'download' || normalized === 'datei') return true;
-    if (/^[0-9]+$/.test(normalized)) return true;
-    if (
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-            normalized,
-        )
-    ) {
-        return true;
-    }
-    return false;
-}
-
-function sanitizeAttachmentName(value: unknown): string | null {
-    if (typeof value !== 'string') return null;
-    const normalized = normalizeMessageText(value).trim();
-    if (!normalized) return null;
-    if (isActionKey(normalized)) return null;
-    if (isGenericDerivedFileName(normalized)) return null;
-    return normalized;
-}
-
-function isUsableAttachmentName(name: string): boolean {
-    return sanitizeAttachmentName(name) !== null;
-}
-
-function isLikelyDownloadUrl(url: string): boolean {
-    const value = url.toLowerCase();
-    return (
-        /\/download\b/.test(value) ||
-        /[?&]download=(true|1)\b/.test(value) ||
-        /[?&]disposition=attachment\b/.test(value)
-    );
-}
-
-function scoreAttachmentUrl(url: string, mime: string): number {
-    let score = 0;
-    const value = url.toLowerCase();
-
-    if (!isLikelyDownloadUrl(value)) score += 3;
-    if (/\.(png|jpe?g|gif|webp|avif|svg)(\?|$)/i.test(value)) score += 2;
-    if (/\/(image|images|media)\//i.test(value)) score += 1;
-    if (mime.toLowerCase().startsWith('image/')) score += 1;
-
-    return score;
-}
-
-function getAttachmentIdentityKey(name: string, size: number | null): string {
-    const normalized = sanitizeAttachmentName(name);
-    if (!normalized) return '';
-    if (!hasFilenameExtension(normalized)) return '';
-    return `${normalized.toLowerCase()}|${size ?? 'na'}`;
-}
-
-function pickBetterAttachmentName(current: string, incoming: string): string {
-    const currentUsable = isUsableAttachmentName(current);
-    const incomingUsable = isUsableAttachmentName(incoming);
-
-    if (incomingUsable && !currentUsable) return incoming;
-    if (currentUsable && !incomingUsable) return current;
-    if (incomingUsable && currentUsable) {
-        if (!hasFilenameExtension(current) && hasFilenameExtension(incoming)) {
-            return incoming;
-        }
-        if (incoming.length > current.length) return incoming;
-    }
-    return current;
-}
-
-function getMessageFilenameHint(source: any): string | null {
-    const candidates = [source?.content, source?.text, source?.message];
-    for (const value of candidates) {
-        if (typeof value !== 'string') continue;
-        const normalized = normalizeMessageText(value).trim();
-        if (!normalized) continue;
-        if (normalized.length > 200) continue;
-        if (/[\n\r]/.test(normalized)) continue;
-        if (hasFilenameExtension(normalized)) return normalized;
-    }
-    return null;
-}
-
-function extractMessageAttachments(source: any): SduiAttachment[] {
-    const bucket = new Map<string, SduiAttachment>();
-    const identityToFingerprint = new Map<string, string>();
-    const messageFilenameHint = getMessageFilenameHint(source);
-
-    const addAttachment = (node: any, hintKey = '') => {
-        if (!node || typeof node !== 'object') return;
-
-        const keyHint = String(hintKey || '').toLowerCase();
-        const attachmentPathHint = isLikelyAttachmentPath(keyHint);
-
-        const urlCandidate = [
-            node?.url,
-            node?.download_url,
-            node?.downloadUrl,
-            node?.file_url,
-            node?.fileUrl,
-            node?.src,
-            node?.uri,
-        ].find((value) => typeof value === 'string' && value.trim());
-
-        if (!urlCandidate) return;
-        if (!isSupportedAttachmentUrl(String(urlCandidate))) return;
-
-        const url = normalizeImageUrl(String(urlCandidate).trim());
-        if (!url) return;
-
-        const mime = String(
-            node?.mime || node?.mimetype || node?.content_type || '',
-        ).trim();
-
-        const contextualNameCandidates = attachmentPathHint
-            ? [node?.title, node?.meta?.title, node?.meta?.displayname]
-            : [];
-
-        const explicitNameCandidate = [
-            node?.name,
-            node?.filename,
-            node?.file_name,
-            node?.original_name,
-            node?.originalName,
-            ...contextualNameCandidates,
-        ]
-            .map(sanitizeAttachmentName)
-            .find((value) => Boolean(value));
-
-        const metadataNameCandidate = [
-            node?.meta?.filename,
-            node?.meta?.file_name,
-            node?.meta?.original_name,
-            node?.meta?.originalName,
-            messageFilenameHint,
-        ]
-            .map(sanitizeAttachmentName)
-            .find((value) => Boolean(value));
-
-        const fallbackNameFromUrl = getFileNameFromUrl(url);
-        const safeNameFromUrl =
-            sanitizeAttachmentName(fallbackNameFromUrl) || fallbackNameFromUrl;
-
-        const name =
-            explicitNameCandidate || metadataNameCandidate || safeNameFromUrl;
-
-        const rawSize =
-            node?.size ?? node?.filesize ?? node?.file_size ?? node?.byte_size;
-        const parsedSize =
-            typeof rawSize === 'number'
-                ? rawSize
-                : Number.parseInt(String(rawSize ?? ''), 10);
-        const size = Number.isFinite(parsedSize) ? parsedSize : null;
-
-        const typeHint = String(
-            node?.type || node?.kind || node?.resource_type || '',
-        ).toLowerCase();
-        const hasAttachmentTypeHint = /(file|attachment|upload|document)/i.test(
-            typeHint,
-        );
-        const hasExplicitName = Boolean(explicitNameCandidate);
-        const hasMime = mime.length > 0;
-        const hasFileSize = size !== null;
-
-        const isClearlyAttachment =
-            attachmentPathHint || hasAttachmentTypeHint || hasExplicitName;
-        if (!isClearlyAttachment) return;
-
-        const hasStrongFileIdentity =
-            hasExplicitName ||
-            hasMime ||
-            hasFileSize ||
-            hasFilenameExtension(name) ||
-            hasFilenameExtension(fallbackNameFromUrl);
-        if (!hasStrongFileIdentity) return;
-
-        if (!hasExplicitName && isGenericDerivedFileName(name)) {
-            return;
-        }
-
-        const attachment: SduiAttachment = {
-            url,
-            name,
-            mime,
-            size,
-            isImage: isImageFile(mime, url, name),
-        };
-
-        const fingerprint = getImageFingerprint(url);
-        const identityKey = getAttachmentIdentityKey(name, size);
-        const mappedFingerprint = identityKey
-            ? identityToFingerprint.get(identityKey)
-            : undefined;
-        const dedupeKey = mappedFingerprint || fingerprint;
-
-        const existing = bucket.get(dedupeKey);
-        if (!existing) {
-            bucket.set(dedupeKey, attachment);
-            if (identityKey) {
-                identityToFingerprint.set(identityKey, dedupeKey);
-            }
-            return;
-        }
-
-        const existingScore = scoreAttachmentUrl(existing.url, existing.mime);
-        const incomingScore = scoreAttachmentUrl(
-            attachment.url,
-            attachment.mime,
-        );
-        const preferredUrl =
-            incomingScore > existingScore ? attachment.url : existing.url;
-
-        bucket.set(dedupeKey, {
-            ...existing,
-            url: preferredUrl,
-            name: pickBetterAttachmentName(existing.name, attachment.name),
-            mime: existing.mime || attachment.mime,
-            size: existing.size ?? attachment.size,
-            isImage: existing.isImage || attachment.isImage,
-        });
-
-        if (identityKey) {
-            identityToFingerprint.set(identityKey, dedupeKey);
-        }
-    };
-
-    if (typeof source?.file === 'string' && source.file.trim()) {
-        addAttachment(
-            {
-                url: source.file,
-                name: source?.file_name || source?.filename,
-                mime: source?.mime || source?.mimetype,
-            },
-            'file',
-        );
-    }
-
-    const walk = (node: any, path = 'root', depth = 0) => {
-        if (!node || depth > 7) return;
-
-        if (Array.isArray(node)) {
-            for (const [index, item] of node.entries()) {
-                walk(item, `${path}[${index}]`, depth + 1);
-            }
-            return;
-        }
-
-        if (typeof node !== 'object') return;
-
-        addAttachment(node, path);
-
-        for (const [key, value] of Object.entries(node)) {
-            if (value && typeof value === 'object') {
-                walk(value, `${path}.${key}`, depth + 1);
-            }
-        }
-    };
-
-    walk(source);
-    return Array.from(bucket.values());
-}
-
 function getChatName(chat: SduiChatItem): string {
     if (chat?.meta?.displayname) return chat.meta.displayname;
     if (chat?.name === 'channels.conversation.name') return 'Privater Chat';
@@ -521,7 +94,22 @@ function getChatName(chat: SduiChatItem): string {
 }
 
 function getChatPreview(chat: SduiChatItem): string {
-    return chat?.meta?.description || 'Keine neuen Nachrichten';
+    const rawPreview =
+        typeof chat?.meta?.description === 'string'
+            ? chat.meta.description
+            : typeof chat?.meta?.last_message === 'string'
+              ? chat.meta.last_message
+              : typeof chat?.description === 'string'
+                ? chat.description
+                : '';
+
+    const normalized = rawPreview.replace(/\s+/g, ' ').trim();
+    if (!normalized) return 'Keine neuen Nachrichten';
+    if (normalized.length > 180) {
+        return `${normalized.slice(0, 177)}...`;
+    }
+
+    return normalized;
 }
 
 function getChatTimestamp(chat: SduiChatItem): string {
@@ -534,6 +122,51 @@ function getChatTimestamp(chat: SduiChatItem): string {
 
 function getMessageChatId(chat: SduiChatItem): string {
     return String(chat?.chat?.id ?? chat?.chat_id ?? chat?.id ?? '');
+}
+
+function getMessageUuid(message: SduiMessage): string {
+    return String(message?.uuid ?? message?.id ?? '').trim();
+}
+
+function hasNonEmptyDateValue(value: unknown): boolean {
+    if (typeof value === 'string') return value.trim().length > 0;
+    return Boolean(value);
+}
+
+function isDeletedMessage(message: SduiMessage): boolean {
+    return (
+        hasNonEmptyDateValue(message?.unset_at) ||
+        hasNonEmptyDateValue(message?.deleted_at)
+    );
+}
+
+function getMessageDeletePermission(
+    message: SduiMessage,
+    fallbackWritePermission: boolean,
+): boolean {
+    const explicit = firstBooleanLike([
+        message?.can?.delete,
+        message?.can?.['delete'],
+        message?.can?.remove,
+        message?.can?.['remove'],
+    ]);
+
+    if (explicit !== null) return explicit;
+    return fallbackWritePermission;
+}
+
+function getMessageInfoPermission(message: SduiMessage): boolean {
+    const explicit = firstBooleanLike([
+        message?.can?.['view-readers-list'],
+        message?.can?.view_readers_list,
+        message?.can?.viewReadersList,
+        message?.can?.['view_readers_list'],
+        message?.can?.readers,
+        message?.can?.['readers'],
+    ]);
+
+    if (explicit !== null) return explicit;
+    return true;
 }
 
 function getMessageKey(message: SduiMessage): string {
@@ -631,10 +264,357 @@ function getNewsBody(news: SduiNews | null): string {
     );
 }
 
+function getNewsItemId(news: SduiNews, index = 0): string {
+    return String(
+        news?.id ?? news?.news_id ?? news?.uuid ?? news?.meta?.id ?? index,
+    );
+}
+
+function getNewsTimestamp(news: SduiNews): number {
+    const raw =
+        news?.published_at ||
+        news?.created_at ||
+        news?.updated_at ||
+        news?.date ||
+        news?.meta?.published_at;
+
+    if (!raw) return 0;
+    const timestamp = new Date(raw).getTime();
+    return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function getNewsDateTime(news: SduiNews): string {
+    const timestamp = getNewsTimestamp(news);
+    if (!timestamp) return '';
+    return new Date(timestamp).toLocaleString('de-DE', {
+        day: '2-digit',
+        month: '2-digit',
+        year: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+}
+
+function getNewsAuthor(news: SduiNews): string {
+    return (
+        news?.author?.displayname ||
+        news?.author?.name ||
+        news?.user?.meta?.displayname ||
+        news?.user?.name ||
+        news?.meta?.author ||
+        'Unbekannt'
+    );
+}
+
+function getNewsAudience(news: SduiNews): string {
+    return (
+        news?.channel?.name ||
+        news?.chat?.name ||
+        news?.group?.name ||
+        news?.audience?.name ||
+        news?.meta?.scope ||
+        'Alle'
+    );
+}
+
+function normalizeTextForComparison(value: string): string {
+    return value
+        .toLowerCase()
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/[\u2010-\u2015]/g, '-')
+        .replace(/[._-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function shouldHideDuplicateAttachmentText(
+    messageText: string,
+    attachments: SduiAttachment[],
+): boolean {
+    const normalizedMessage = normalizeTextForComparison(messageText);
+    if (!normalizedMessage) return false;
+    if (attachments.length === 0) return false;
+
+    const names = attachments
+        .map((attachment) => getAttachmentDisplayName(attachment))
+        .concat(attachments.map((attachment) => attachment.name))
+        .map((value) => normalizeTextForComparison(String(value || '')))
+        .filter(Boolean);
+
+    if (names.length === 0) return false;
+
+    const lines = messageText
+        .split(/\r?\n+/)
+        .map((line) => normalizeTextForComparison(line))
+        .filter(Boolean);
+
+    if (lines.length === 0) return false;
+    if (lines.length <= 2 && lines.every((line) => names.includes(line))) {
+        return true;
+    }
+
+    if (lines.length === 1) {
+        return names.some((name) => {
+            if (normalizedMessage === name) return true;
+            if (normalizedMessage === `${name} download`) return true;
+            return false;
+        });
+    }
+
+    return false;
+}
+
+type SduiReplyPreview = {
+    uuid: string;
+    sender: string;
+    text: string;
+    time: string;
+};
+
+function isLikelyMessageReferenceId(value: unknown): boolean {
+    const normalized = String(value ?? '').trim();
+    if (!normalized) return false;
+
+    if (/\s/.test(normalized)) return false;
+    if (/[/?&#=]/.test(normalized)) return false;
+    if (
+        /\.(png|jpe?g|gif|webp|avif|svg|pdf|docx?|xlsx?|pptx?|txt|zip)$/i.test(
+            normalized,
+        )
+    ) {
+        return false;
+    }
+
+    if (
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+            normalized,
+        )
+    ) {
+        return true;
+    }
+
+    if (/^[0-9a-f]{16,}$/i.test(normalized)) return true;
+    if (/^[0-9]{4,20}$/.test(normalized)) return true;
+    if (/^[a-z0-9][a-z0-9_-]{7,}$/i.test(normalized)) return true;
+
+    return false;
+}
+
+function pickFirstReplyReferenceId(candidates: unknown[]): string {
+    for (const value of candidates) {
+        if (!isLikelyMessageReferenceId(value)) continue;
+        return String(value).trim();
+    }
+    return '';
+}
+
+function extractReplyReferenceUuid(message: SduiMessage): string {
+    const candidates: unknown[] = [
+        message?.reply_to_uuid,
+        message?.reply_uuid,
+        message?.replyToUuid,
+        message?.in_reply_to,
+        message?.inReplyTo,
+        message?.thread_parent_uuid,
+        message?.meta?.reply_to_uuid,
+        message?.meta?.reply_uuid,
+        message?.payload?.reply_to_uuid,
+        message?.payload?.reply_uuid,
+        message?.payload?.reply?.uuid,
+        message?.payload?.reply_to?.uuid,
+        message?.payload?.reply?.id,
+        message?.payload?.reply_to?.id,
+        message?.reply?.uuid,
+        message?.reply?.id,
+        message?.reply_to?.uuid,
+        message?.reply_to?.id,
+        message?.quote?.uuid,
+        message?.quote?.id,
+        message?.quoted_message?.uuid,
+        message?.quoted_message?.id,
+    ];
+
+    const embeddedReferenceNodes = [
+        message?.reply,
+        message?.reply_to,
+        message?.payload?.reply,
+        message?.payload?.reply_to,
+        message?.meta?.reply,
+        message?.meta?.reply_to,
+        message?.quote,
+        message?.quoted_message,
+    ];
+
+    for (const node of embeddedReferenceNodes) {
+        if (!node || typeof node !== 'object' || Array.isArray(node)) {
+            continue;
+        }
+
+        candidates.push(
+            node?.message_uuid,
+            node?.reply_to_uuid,
+            node?.uuid,
+            node?.id,
+        );
+    }
+
+    const references = Array.isArray(message?.references)
+        ? message.references
+        : [];
+
+    for (const reference of references) {
+        if (!reference || typeof reference !== 'object') continue;
+
+        const referenceType = normalizeForPermissionMatch(
+            String(
+                reference?.type ||
+                    reference?.kind ||
+                    reference?.resource_type ||
+                    '',
+            ),
+        );
+
+        const looksLikeReplyReference =
+            referenceType.includes('reply') ||
+            referenceType.includes('quote') ||
+            referenceType.includes('thread') ||
+            reference?.reply != null ||
+            reference?.reply_to != null ||
+            reference?.reply_to_uuid != null ||
+            reference?.in_reply_to != null ||
+            reference?.quote != null;
+
+        if (!looksLikeReplyReference) continue;
+
+        candidates.push(
+            reference?.reply_to_uuid,
+            reference?.in_reply_to,
+            reference?.uuid,
+            reference?.id,
+            reference?.reply?.uuid,
+            reference?.reply?.id,
+            reference?.reply_to?.uuid,
+            reference?.reply_to?.id,
+            reference?.quote?.uuid,
+            reference?.quote?.id,
+        );
+    }
+
+    return pickFirstReplyReferenceId(candidates);
+}
+
+function extractReplyReferenceMessage(
+    message: SduiMessage,
+): SduiMessage | null {
+    const candidates = [
+        message?.reply_to_message,
+        message?.reply_to,
+        message?.reply,
+        message?.quoted_message,
+        message?.quote,
+        message?.payload?.reply,
+        message?.payload?.reply_to,
+        message?.meta?.reply,
+        message?.meta?.reply_to,
+        message?.reference?.message,
+    ];
+
+    const references = Array.isArray(message?.references)
+        ? message.references
+        : [];
+    for (const reference of references) {
+        if (!reference || typeof reference !== 'object') continue;
+
+        const referenceType = normalizeForPermissionMatch(
+            String(
+                reference?.type ||
+                    reference?.kind ||
+                    reference?.resource_type ||
+                    '',
+            ),
+        );
+
+        const looksLikeReplyReference =
+            referenceType.includes('reply') ||
+            referenceType.includes('quote') ||
+            referenceType.includes('thread') ||
+            reference?.reply != null ||
+            reference?.reply_to != null ||
+            reference?.reply_to_uuid != null ||
+            reference?.in_reply_to != null ||
+            reference?.quote != null;
+
+        if (!looksLikeReplyReference) continue;
+
+        candidates.push(
+            reference?.message,
+            reference?.reply,
+            reference?.reply_to,
+            reference?.quote,
+        );
+    }
+
+    for (const candidate of candidates) {
+        if (
+            !candidate ||
+            typeof candidate !== 'object' ||
+            Array.isArray(candidate)
+        ) {
+            continue;
+        }
+
+        const hasMessageBody =
+            candidate?.content ||
+            candidate?.content_rendered ||
+            candidate?.text ||
+            candidate?.message;
+
+        if (hasMessageBody) {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
+function getReplyPreviewForMessage(
+    message: SduiMessage,
+    messageByUuid: Record<string, SduiMessage>,
+    newsById: Record<string, SduiNews>,
+): SduiReplyPreview | null {
+    const directReference = extractReplyReferenceMessage(message);
+    const replyUuid = extractReplyReferenceUuid(message);
+
+    const fallbackReference = replyUuid ? messageByUuid[replyUuid] : null;
+    const referencedMessage = directReference || fallbackReference || null;
+
+    if (!referencedMessage) {
+        return null;
+    }
+
+    const ownUuid = getMessageUuid(message);
+    const referencedUuid = getMessageUuid(referencedMessage) || replyUuid;
+    if (referencedUuid && ownUuid && referencedUuid === ownUuid) {
+        return null;
+    }
+
+    const linkedNews = getLinkedNews(referencedMessage, newsById);
+    return {
+        uuid: referencedUuid || '',
+        sender: getMessageSender(referencedMessage),
+        text: getMessageText(referencedMessage, linkedNews),
+        time: getMessageTime(referencedMessage),
+    };
+}
+
 function getMessageText(
     message: SduiMessage,
     linkedNews: SduiNews | null,
 ): string {
+    if (isDeletedMessage(message)) {
+        return 'Nachricht wurde gelöscht.';
+    }
+
     const formatActionMessage = (actionKey: string): string => {
         if (actionKey === 'news.posted' && linkedNews) {
             const newsBody = getNewsBody(linkedNews);
@@ -645,12 +625,7 @@ function getMessageText(
             return ACTION_MESSAGE_MAP[actionKey];
         }
 
-        const humanized = actionKey
-            .split('.')
-            .map((part: string) => part.replace(/_/g, ' '))
-            .join(' - ');
-
-        return `Systemaktion: ${humanized}`;
+        return actionKey;
     };
 
     const rendered = normalizeMessageText(message?.content_rendered);
@@ -702,6 +677,43 @@ function getMessageTime(message: SduiMessage): string {
         hour: '2-digit',
         minute: '2-digit',
     });
+}
+
+function getMessageDateTime(message: SduiMessage): string {
+    const raw = message?.created_at || message?.updated_at;
+    if (!raw) return 'Unbekannt';
+
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return 'Unbekannt';
+
+    return date.toLocaleString('de-DE', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+}
+
+function normalizeReaderList(input: any): any[] {
+    if (Array.isArray(input)) return input;
+    if (Array.isArray(input?.data)) return input.data;
+    if (Array.isArray(input?.readers)) return input.readers;
+    return [];
+}
+
+function getReaderName(reader: any): string {
+    const first = reader?.firstname || reader?.first_name || '';
+    const last = reader?.lastname || reader?.last_name || '';
+    const fullName = `${first} ${last}`.trim();
+
+    return (
+        reader?.displayname ||
+        reader?.name ||
+        reader?.meta?.displayname ||
+        fullName ||
+        'Unbekannter Leser'
+    );
 }
 
 function normalizeForPermissionMatch(value: string): string {
@@ -1098,9 +1110,36 @@ export function SduiChat() {
     const [newsPage, setNewsPage] = useState<number>(0);
     const [hasMoreNews, setHasMoreNews] = useState<boolean>(true);
     const [loadingNews, setLoadingNews] = useState<boolean>(false);
+    const [activeTab, setActiveTab] = useState<'chats' | 'news'>('chats');
+    const [newsSearchQuery, setNewsSearchQuery] = useState<string>('');
+    const [expandedNewsIds, setExpandedNewsIds] = useState<
+        Record<string, true>
+    >({});
 
     const [draft, setDraft] = useState<string>('');
     const [sending, setSending] = useState<boolean>(false);
+    const [replyToMessage, setReplyToMessage] = useState<SduiMessage | null>(
+        null,
+    );
+    const [deletingMessageKey, setDeletingMessageKey] = useState<string | null>(
+        null,
+    );
+    const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(
+        null,
+    );
+    const [messageInfoTarget, setMessageInfoTarget] =
+        useState<SduiMessage | null>(null);
+    const [messageReaders, setMessageReaders] = useState<any[]>([]);
+    const [loadingMessageReaders, setLoadingMessageReaders] =
+        useState<boolean>(false);
+    const [messageInfoError, setMessageInfoError] = useState<string | null>(
+        null,
+    );
+    const [openMessageMenuKey, setOpenMessageMenuKey] = useState<string | null>(
+        null,
+    );
+    const [deleteTargetMessage, setDeleteTargetMessage] =
+        useState<SduiMessage | null>(null);
 
     const messagesEndRef = useRef<HTMLDivElement | null>(null);
     const messagesContainerRef = useRef<HTMLDivElement | null>(null);
@@ -1108,6 +1147,7 @@ export function SduiChat() {
     const loadingOlderRef = useRef<boolean>(false);
     const loadingNewsRef = useRef<boolean>(false);
     const hasMoreNewsRef = useRef<boolean>(true);
+    const shouldStickToBottomRef = useRef<boolean>(true);
 
     const selectedChatId = useMemo(
         () => (selectedChat ? getMessageChatId(selectedChat) : ''),
@@ -1125,6 +1165,53 @@ export function SduiChat() {
             canWriteToChat(selectedChat, chats, selectedChatDetails, messages),
         [selectedChat, chats, selectedChatDetails, messages],
     );
+    const replyPreview = useMemo(() => {
+        if (!replyToMessage) return null;
+
+        const linkedNews = getLinkedNews(replyToMessage, newsById);
+        return {
+            key: getMessageKey(replyToMessage),
+            uuid: getMessageUuid(replyToMessage),
+            sender: getMessageSender(replyToMessage),
+            text: getMessageText(replyToMessage, linkedNews),
+            time: getMessageTime(replyToMessage),
+        };
+    }, [newsById, replyToMessage]);
+    const messageByUuid = useMemo(() => {
+        const index: Record<string, SduiMessage> = {};
+        for (const message of messages) {
+            const uuid = getMessageUuid(message);
+            if (uuid) index[uuid] = message;
+        }
+        return index;
+    }, [messages]);
+    const newsItems = useMemo(
+        () =>
+            Object.values(newsById).sort(
+                (a, b) => getNewsTimestamp(b) - getNewsTimestamp(a),
+            ),
+        [newsById],
+    );
+    const filteredNewsItems = useMemo(() => {
+        const query = normalizeTextForComparison(newsSearchQuery);
+        if (!query) return newsItems;
+
+        return newsItems.filter((news) => {
+            const haystack = normalizeTextForComparison(
+                `${getNewsTitle(news)} ${getNewsBody(news)} ${getNewsAuthor(news)} ${getNewsAudience(news)}`,
+            );
+            return haystack.includes(query);
+        });
+    }, [newsItems, newsSearchQuery]);
+    const deleteTargetPreview = useMemo(() => {
+        if (!deleteTargetMessage) return null;
+        const linkedNews = getLinkedNews(deleteTargetMessage, newsById);
+        return {
+            key: getMessageKey(deleteTargetMessage),
+            sender: getMessageSender(deleteTargetMessage),
+            text: getMessageText(deleteTargetMessage, linkedNews),
+        };
+    }, [deleteTargetMessage, newsById]);
 
     useEffect(() => {
         if (!lightboxImageUrl) return;
@@ -1144,6 +1231,44 @@ export function SduiChat() {
             window.removeEventListener('keydown', handleKeyDown);
         };
     }, [lightboxImageUrl]);
+
+    useEffect(() => {
+        if (!messageInfoTarget) return;
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setMessageInfoTarget(null);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [messageInfoTarget]);
+
+    useEffect(() => {
+        if (!deleteTargetMessage) return;
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                setDeleteTargetMessage(null);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [deleteTargetMessage]);
+
+    useEffect(() => {
+        const handlePointerDown = (event: PointerEvent) => {
+            const target = event.target as HTMLElement | null;
+            if (target?.closest('[data-sdui-message-menu="true"]')) return;
+            setOpenMessageMenuKey(null);
+        };
+
+        window.addEventListener('pointerdown', handlePointerDown);
+        return () =>
+            window.removeEventListener('pointerdown', handlePointerDown);
+    }, []);
 
     const loadChats = useCallback(async () => {
         const token = localStorage.getItem('token');
@@ -1218,15 +1343,39 @@ export function SduiChat() {
         [hasMoreNews, loadNewsPage, newsById, newsPage],
     );
 
-    const scrollToBottom = () => {
+    const scrollToBottom = useCallback((smooth = false) => {
+        const container = messagesContainerRef.current;
+        if (!container) return;
+
+        shouldStickToBottomRef.current = true;
+        const applyBottomPosition = () => {
+            container.scrollTop = container.scrollHeight;
+        };
+
+        if (smooth && messagesEndRef.current) {
+            messagesEndRef.current.scrollIntoView({
+                behavior: 'smooth',
+                block: 'end',
+            });
+        }
+
         requestAnimationFrame(() => {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            applyBottomPosition();
+            requestAnimationFrame(applyBottomPosition);
+            window.setTimeout(applyBottomPosition, 120);
         });
-    };
+    }, []);
+    const stickToBottomIfNeeded = useCallback(() => {
+        if (!shouldStickToBottomRef.current) return;
+        scrollToBottom(false);
+    }, [scrollToBottom]);
 
     React.useEffect(() => {
         messagesRef.current = messages;
-    }, [messages]);
+        if (shouldStickToBottomRef.current) {
+            scrollToBottom(false);
+        }
+    }, [messages, scrollToBottom]);
 
     React.useEffect(() => {
         hasMoreNewsRef.current = hasMoreNews;
@@ -1285,7 +1434,8 @@ export function SduiChat() {
                     setMessages(incoming);
                     setMessagePage(page);
                     setHasMoreMessages(incoming.length > 0);
-                    scrollToBottom();
+                    shouldStickToBottomRef.current = true;
+                    scrollToBottom(false);
                 } else {
                     const container = messagesContainerRef.current;
                     const previousHeight = container?.scrollHeight ?? 0;
@@ -1320,7 +1470,7 @@ export function SduiChat() {
                 }
             }
         },
-        [ensureNewsForMessages],
+        [ensureNewsForMessages, scrollToBottom],
     );
 
     const bootstrap = useCallback(async () => {
@@ -1419,14 +1569,25 @@ export function SduiChat() {
     }, []);
 
     const handleSelectChat = async (chat: SduiChatItem) => {
+        setActiveTab('chats');
         setSelectedChat(chat);
         setSelectedChatDetails(null);
         setMessages([]);
         setMessageError(null);
         setDraft('');
+        setReplyToMessage(null);
+        setDeletingMessageKey(null);
+        setCopiedMessageKey(null);
+        setMessageInfoTarget(null);
+        setMessageReaders([]);
+        setMessageInfoError(null);
+        setLoadingMessageReaders(false);
+        setOpenMessageMenuKey(null);
+        setDeleteTargetMessage(null);
         setMessagePage(1);
         setHasMoreMessages(true);
         setLoadingOlderMessages(false);
+        shouldStickToBottomRef.current = true;
         await Promise.all([
             loadMessagesPage(chat, 1, 'replace', true),
             loadChatDetails(chat),
@@ -1436,6 +1597,11 @@ export function SduiChat() {
     const handleMessagesScroll = async (
         event: React.UIEvent<HTMLDivElement>,
     ) => {
+        const element = event.currentTarget;
+        const distanceFromBottom =
+            element.scrollHeight - element.scrollTop - element.clientHeight;
+        shouldStickToBottomRef.current = distanceFromBottom <= 96;
+
         if (
             !selectedChat ||
             loadingMessages ||
@@ -1446,7 +1612,6 @@ export function SduiChat() {
             return;
         }
 
-        const element = event.currentTarget;
         if (element.scrollTop > 40) {
             return;
         }
@@ -1466,27 +1631,210 @@ export function SduiChat() {
         }
     };
 
+    const handleNewsScroll = async (event: React.UIEvent<HTMLDivElement>) => {
+        if (!hasMoreNews || loadingNews) return;
+
+        const element = event.currentTarget;
+        const distanceToBottom =
+            element.scrollHeight - element.scrollTop - element.clientHeight;
+
+        if (distanceToBottom > 160) return;
+        await loadNewsPage(newsPage + 1);
+    };
+
+    const handleCopyMessageText = useCallback(
+        async (message: SduiMessage) => {
+            const linkedNews = getLinkedNews(message, newsById);
+            const text = getMessageText(message, linkedNews).trim();
+            if (!text) return;
+
+            const messageKey = getMessageKey(message);
+
+            try {
+                if (navigator?.clipboard?.writeText) {
+                    await navigator.clipboard.writeText(text);
+                } else {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = text;
+                    textarea.style.position = 'fixed';
+                    textarea.style.opacity = '0';
+                    document.body.appendChild(textarea);
+                    textarea.focus();
+                    textarea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textarea);
+                }
+
+                setCopiedMessageKey(messageKey);
+                window.setTimeout(() => {
+                    setCopiedMessageKey((current) =>
+                        current === messageKey ? null : current,
+                    );
+                }, 1400);
+            } catch (error) {
+                console.error(error);
+                setMessageError('Nachricht konnte nicht kopiert werden.');
+            }
+        },
+        [newsById],
+    );
+
+    const handleDeleteMessage = useCallback(
+        async (message: SduiMessage): Promise<boolean> => {
+            if (!selectedChatId) return false;
+
+            const messageUuid = getMessageUuid(message);
+            if (!messageUuid) {
+                setMessageError('Nachricht kann nicht gelöscht werden.');
+                return false;
+            }
+
+            const messageKey = getMessageKey(message);
+            setOpenMessageMenuKey(null);
+            setDeletingMessageKey(messageKey);
+            setMessageError(null);
+
+            try {
+                const token = localStorage.getItem('token');
+                const res = await fetch(
+                    `/api/sdui/chats/${encodeURIComponent(selectedChatId)}/messages/${encodeURIComponent(messageUuid)}`,
+                    {
+                        method: 'DELETE',
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                        },
+                    },
+                );
+
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(
+                        err?.error || 'Nachricht konnte nicht gelöscht werden.',
+                    );
+                }
+
+                if (
+                    replyToMessage &&
+                    getMessageKey(replyToMessage) === messageKey
+                ) {
+                    setReplyToMessage(null);
+                }
+
+                if (
+                    messageInfoTarget &&
+                    getMessageKey(messageInfoTarget) === messageKey
+                ) {
+                    setMessageInfoTarget(null);
+                }
+
+                if (selectedChat) {
+                    await loadMessagesPage(selectedChat, 1, 'replace', false);
+                }
+
+                return true;
+            } catch (error: any) {
+                setMessageError(
+                    error?.message || 'Nachricht konnte nicht gelöscht werden.',
+                );
+                return false;
+            } finally {
+                setDeletingMessageKey((current) =>
+                    current === messageKey ? null : current,
+                );
+            }
+        },
+        [
+            loadMessagesPage,
+            messageInfoTarget,
+            replyToMessage,
+            selectedChat,
+            selectedChatId,
+        ],
+    );
+
+    const handleRequestDeleteMessage = useCallback((message: SduiMessage) => {
+        setOpenMessageMenuKey(null);
+        setDeleteTargetMessage(message);
+    }, []);
+
+    const handleConfirmDeleteMessage = useCallback(async () => {
+        if (!deleteTargetMessage) return;
+        const deleted = await handleDeleteMessage(deleteTargetMessage);
+        if (deleted) {
+            setDeleteTargetMessage(null);
+        }
+    }, [deleteTargetMessage, handleDeleteMessage]);
+
+    const handleOpenMessageInfo = useCallback(
+        async (message: SduiMessage) => {
+            setOpenMessageMenuKey(null);
+            setMessageInfoTarget(message);
+            setMessageReaders([]);
+            setMessageInfoError(null);
+
+            const messageUuid = getMessageUuid(message);
+            if (!selectedChatId || !messageUuid) {
+                return;
+            }
+
+            setLoadingMessageReaders(true);
+            try {
+                const token = localStorage.getItem('token');
+                const res = await fetch(
+                    `/api/sdui/chats/${encodeURIComponent(selectedChatId)}/messages/${encodeURIComponent(messageUuid)}/readers?page=1`,
+                    {
+                        headers: {
+                            Authorization: `Bearer ${token}`,
+                        },
+                    },
+                );
+
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(
+                        err?.error ||
+                            'Nachrichteninformationen konnten nicht geladen werden.',
+                    );
+                }
+
+                const body = await res.json();
+                setMessageReaders(normalizeReaderList(body));
+            } catch (error: any) {
+                setMessageInfoError(
+                    error?.message ||
+                        'Nachrichteninformationen konnten nicht geladen werden.',
+                );
+            } finally {
+                setLoadingMessageReaders(false);
+            }
+        },
+        [selectedChatId],
+    );
+
     const handleSendMessage = async (e: React.FormEvent) => {
         e.preventDefault();
         const content = draft.trim();
         if (!selectedChatId || !content || !canWriteInSelectedChat) return;
+
+        const replyUuid = replyPreview?.uuid || '';
+        const sendAsReply = Boolean(replyToMessage && replyUuid);
 
         setSending(true);
         setMessageError(null);
 
         try {
             const token = localStorage.getItem('token');
-            const res = await fetch(
-                `/api/sdui/chats/${encodeURIComponent(selectedChatId)}/messages`,
-                {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        Authorization: `Bearer ${token}`,
-                    },
-                    body: JSON.stringify({ text: content }),
+            const endpoint = sendAsReply
+                ? `/api/sdui/chats/${encodeURIComponent(selectedChatId)}/messages/${encodeURIComponent(replyUuid)}/reply`
+                : `/api/sdui/chats/${encodeURIComponent(selectedChatId)}/messages`;
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`,
                 },
-            );
+                body: JSON.stringify({ content }),
+            });
 
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}));
@@ -1496,6 +1844,7 @@ export function SduiChat() {
             }
 
             setDraft('');
+            setReplyToMessage(null);
             if (selectedChat) {
                 await loadMessagesPage(selectedChat, 1, 'replace', false);
             }
@@ -1547,38 +1896,91 @@ export function SduiChat() {
     }
 
     const showInitialMessagesSpinner = loadingMessages && messages.length === 0;
+    const serializedMessageInfo = (() => {
+        if (!messageInfoTarget) return '';
+        try {
+            return JSON.stringify(messageInfoTarget, null, 2);
+        } catch {
+            return '';
+        }
+    })();
 
     return (
-        <div className="h-full w-full flex bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
-            <aside
-                className={`
+        <div className="h-full w-full flex flex-col bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+            <div className="shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2">
+                <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 p-1">
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setActiveTab('chats');
+                            setOpenMessageMenuKey(null);
+                        }}
+                        className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                            activeTab === 'chats'
+                                ? 'bg-white dark:bg-slate-700 text-blue-700 dark:text-blue-300 shadow-sm'
+                                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
+                        }`}
+                    >
+                        Chats
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            setActiveTab('news');
+                            setOpenMessageMenuKey(null);
+                            setDeleteTargetMessage(null);
+                            setReplyToMessage(null);
+                        }}
+                        className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                            activeTab === 'news'
+                                ? 'bg-white dark:bg-slate-700 text-blue-700 dark:text-blue-300 shadow-sm'
+                                : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100'
+                        }`}
+                    >
+                        News
+                    </button>
+                </div>
+            </div>
+
+            <div className="min-h-0 flex-1 flex overflow-hidden">
+                {activeTab === 'chats' ? (
+                    <>
+                        <aside
+                            className={`
                     ${selectedChat ? 'hidden md:flex' : 'flex'}
-                    w-full md:w-[340px] lg:w-[380px] shrink-0 flex-col
+                    w-full md:w-[340px] lg:w-[380px] shrink-0 min-h-0 flex-col
                     border-r border-slate-200 dark:border-slate-800
                 `}
-            >
-                <div className="flex-1 overflow-y-auto p-2 space-y-2">
-                    {errorMsg && (
-                        <div className="rounded-md border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-sm">
-                            {errorMsg}
-                        </div>
-                    )}
+                        >
+                            <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain p-2 space-y-2">
+                                {errorMsg && (
+                                    <div className="rounded-md border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-sm">
+                                        {errorMsg}
+                                    </div>
+                                )}
 
-                    {chats.length === 0 ? (
-                        <div className="p-4 rounded-md border text-blue-800 border-blue-200 bg-blue-50 dark:bg-blue-950 dark:text-blue-200 dark:border-blue-900">
-                            <p className="text-sm">Keine Chats gefunden.</p>
-                        </div>
-                    ) : (
-                        chats.map((chat, index) => {
-                            const active = selectedChat?.id === chat?.id;
-                            const unread = Boolean(chat?.meta?.is_unread);
+                                {chats.length === 0 ? (
+                                    <div className="p-4 rounded-md border text-blue-800 border-blue-200 bg-blue-50 dark:bg-blue-950 dark:text-blue-200 dark:border-blue-900">
+                                        <p className="text-sm">
+                                            Keine Chats gefunden.
+                                        </p>
+                                    </div>
+                                ) : (
+                                    chats.map((chat, index) => {
+                                        const active =
+                                            selectedChat?.id === chat?.id;
+                                        const unread = Boolean(
+                                            chat?.meta?.is_unread,
+                                        );
 
-                            return (
-                                <button
-                                    key={chat?.id || index}
-                                    onClick={() => handleSelectChat(chat)}
-                                    className={`
-                                        w-full text-left rounded-lg border px-3 py-2 transition-colors
+                                        return (
+                                            <button
+                                                key={chat?.id || index}
+                                                onClick={() =>
+                                                    handleSelectChat(chat)
+                                                }
+                                                className={`
+                                            w-full text-left rounded-lg border px-3 py-2 transition-colors
                                         ${
                                             active
                                                 ? 'border-blue-300 bg-blue-100 dark:border-blue-700 dark:bg-blue-900/40'
@@ -1587,423 +1989,863 @@ export function SduiChat() {
                                                   : 'border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50'
                                         }
                                     `}
-                                >
-                                    <div className="flex items-start justify-between gap-2">
-                                        <h3 className="font-semibold text-sm line-clamp-1">
-                                            {getChatName(chat)}
-                                        </h3>
-                                        <span className="text-[10px] text-slate-400 dark:text-slate-500 shrink-0">
-                                            {getChatTimestamp(chat)}
-                                        </span>
-                                    </div>
-                                    <p className="text-xs mt-1 text-slate-500 dark:text-slate-400 line-clamp-2">
-                                        {getChatPreview(chat)}
-                                    </p>
-                                </button>
-                            );
-                        })
-                    )}
-                </div>
-            </aside>
-
-            <section className="flex-1 min-w-0 flex flex-col bg-slate-50 dark:bg-slate-950">
-                {!selectedChat ? (
-                    <div className="hidden md:flex flex-1 items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
-                        Chat auswaehlen, um den Verlauf zu sehen.
-                    </div>
-                ) : (
-                    <>
-                        <header className="h-[69px] px-4 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center gap-3">
-                            <button
-                                onClick={() => {
-                                    setSelectedChat(null);
-                                    setSelectedChatDetails(null);
-                                }}
-                                className="md:hidden p-2 -ml-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800"
-                                aria-label="Zurueck zur Chatliste"
-                            >
-                                <svg
-                                    className="w-5 h-5"
-                                    fill="none"
-                                    viewBox="0 0 24 24"
-                                    stroke="currentColor"
-                                >
-                                    <path
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth={2}
-                                        d="M15 19l-7-7 7-7"
-                                    />
-                                </svg>
-                            </button>
-                            <div className="min-w-0">
-                                <h2 className="font-semibold text-base truncate">
-                                    {getChatName(selectedChat)}
-                                </h2>
-                                {selectedChat?.meta?.subtitle && (
-                                    <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                                        {selectedChat.meta.subtitle}
-                                    </p>
+                                            >
+                                                <div className="flex items-start justify-between gap-2">
+                                                    <h3 className="min-w-0 font-semibold text-sm truncate">
+                                                        {getChatName(chat)}
+                                                    </h3>
+                                                    <span className="text-[10px] text-slate-400 dark:text-slate-500 shrink-0">
+                                                        {getChatTimestamp(chat)}
+                                                    </span>
+                                                </div>
+                                                <p className="text-xs mt-1 leading-snug text-slate-500 dark:text-slate-400 line-clamp-2">
+                                                    {getChatPreview(chat)}
+                                                </p>
+                                            </button>
+                                        );
+                                    })
                                 )}
                             </div>
-                        </header>
+                        </aside>
 
-                        <main
-                            ref={messagesContainerRef}
-                            onScroll={handleMessagesScroll}
-                            className="flex-1 overflow-y-auto p-4 space-y-3"
-                        >
-                            {showInitialMessagesSpinner ? (
-                                <div className="h-full flex items-center justify-center">
-                                    <div className="h-8 w-8 rounded-full border-2 border-slate-300 border-t-blue-600 animate-spin" />
-                                </div>
-                            ) : messageError ? (
-                                <div className="rounded-md border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-sm">
-                                    {messageError}
-                                </div>
-                            ) : messages.length === 0 ? (
-                                <div className="h-full flex items-center justify-center text-sm text-slate-400 dark:text-slate-500">
-                                    Keine Nachrichten in diesem Chat.
+                        <section className="flex-1 min-w-0 flex flex-col bg-slate-50 dark:bg-slate-950">
+                            {!selectedChat ? (
+                                <div className="hidden md:flex flex-1 items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
+                                    Chat auswaehlen, um den Verlauf zu sehen.
                                 </div>
                             ) : (
-                                messages.map((message) => {
-                                    const actionKey =
-                                        typeof message?.content === 'string'
-                                            ? message.content.trim()
-                                            : '';
-                                    const info = isInfoMessage(message);
-                                    const linkedNews = getLinkedNews(
-                                        message,
-                                        newsById,
-                                    );
-                                    const messageText = getMessageText(
-                                        message,
-                                        linkedNews,
-                                    );
-                                    const newsTitle = getNewsTitle(linkedNews);
-                                    const newsBody = getNewsBody(linkedNews);
-                                    const newsImages = extractImageUrls([
-                                        linkedNews,
-                                        message,
-                                    ]);
-                                    const visibleNewsImages = newsImages.filter(
-                                        (src) => !hiddenImageUrls[src],
-                                    );
-                                    const singleNewsImage =
-                                        visibleNewsImages.length === 1;
-                                    const messageAttachments =
-                                        extractMessageAttachments(message);
-                                    const visibleImageAttachments =
-                                        messageAttachments.filter(
-                                            (attachment) =>
-                                                attachment.isImage &&
-                                                !hiddenImageUrls[
-                                                    attachment.url
-                                                ],
-                                        );
-                                    const fileAttachments =
-                                        messageAttachments.filter(
-                                            (attachment) => !attachment.isImage,
-                                        );
-                                    const singleAttachmentImage =
-                                        visibleImageAttachments.length === 1;
-
-                                    return (
-                                        <div
-                                            key={getMessageKey(message)}
-                                            className={`max-w-[90%] rounded-2xl border px-3 py-2 ${
-                                                info
-                                                    ? 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20'
-                                                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800'
-                                            }`}
+                                <>
+                                    <header className="h-[69px] px-4 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center gap-3">
+                                        <button
+                                            onClick={() => {
+                                                setSelectedChat(null);
+                                                setSelectedChatDetails(null);
+                                                setReplyToMessage(null);
+                                                setMessageInfoTarget(null);
+                                                setMessageReaders([]);
+                                                setMessageInfoError(null);
+                                                setOpenMessageMenuKey(null);
+                                                setDeleteTargetMessage(null);
+                                            }}
+                                            className="md:hidden p-2 -ml-2 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800"
+                                            aria-label="Zurueck zur Chatliste"
                                         >
-                                            <div className="flex items-center justify-between gap-4 mb-1">
-                                                <span
-                                                    className={`text-xs font-semibold ${
-                                                        info
-                                                            ? 'text-amber-700 dark:text-amber-300'
-                                                            : 'text-blue-600 dark:text-blue-400'
-                                                    }`}
-                                                >
-                                                    {getMessageSender(message)}
-                                                </span>
-                                                <span className="text-[10px] text-slate-400 dark:text-slate-500">
-                                                    {getMessageTime(message)}
-                                                </span>
-                                            </div>
-
-                                            <div
-                                                className={`text-sm whitespace-pre-wrap wrap-break-word ${
-                                                    info
-                                                        ? 'text-amber-900 dark:text-amber-100'
-                                                        : 'text-slate-800 dark:text-slate-200'
-                                                }`}
+                                            <svg
+                                                className="w-5 h-5"
+                                                fill="none"
+                                                viewBox="0 0 24 24"
+                                                stroke="currentColor"
                                             >
-                                                {messageText}
-                                            </div>
+                                                <path
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    strokeWidth={2}
+                                                    d="M15 19l-7-7 7-7"
+                                                />
+                                            </svg>
+                                        </button>
+                                        <div className="min-w-0">
+                                            <h2 className="font-semibold text-base truncate">
+                                                {getChatName(selectedChat)}
+                                            </h2>
+                                            {selectedChat?.meta?.subtitle && (
+                                                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                                                    {selectedChat.meta.subtitle}
+                                                </p>
+                                            )}
+                                        </div>
+                                    </header>
 
-                                            {visibleImageAttachments.length >
-                                                0 && (
-                                                <div
-                                                    className={`mt-2 ${
-                                                        singleAttachmentImage
-                                                            ? ''
-                                                            : 'grid grid-cols-1 sm:grid-cols-2 gap-2'
-                                                    }`}
-                                                >
-                                                    {visibleImageAttachments.map(
-                                                        (attachment) => (
-                                                            <div
-                                                                key={`${getMessageKey(message)}-${attachment.url}`}
-                                                                className={`rounded-md overflow-hidden border border-slate-200/80 dark:border-slate-700/70 bg-slate-50 dark:bg-slate-900/50 ${
-                                                                    singleAttachmentImage
-                                                                        ? 'w-full'
-                                                                        : ''
+                                    <main
+                                        ref={messagesContainerRef}
+                                        onScroll={handleMessagesScroll}
+                                        className="flex-1 overflow-y-auto p-4 space-y-3"
+                                    >
+                                        {showInitialMessagesSpinner ? (
+                                            <div className="h-full flex items-center justify-center">
+                                                <div className="h-8 w-8 rounded-full border-2 border-slate-300 border-t-blue-600 animate-spin" />
+                                            </div>
+                                        ) : messageError ? (
+                                            <div className="rounded-md border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-sm">
+                                                {messageError}
+                                            </div>
+                                        ) : messages.length === 0 ? (
+                                            <div className="h-full flex items-center justify-center text-sm text-slate-400 dark:text-slate-500">
+                                                Keine Nachrichten in diesem
+                                                Chat.
+                                            </div>
+                                        ) : (
+                                            messages.map((message) => {
+                                                const messageKey =
+                                                    getMessageKey(message);
+                                                const messageUuid =
+                                                    getMessageUuid(message);
+                                                const actionKey =
+                                                    typeof message?.content ===
+                                                    'string'
+                                                        ? message.content.trim()
+                                                        : '';
+                                                const info =
+                                                    isInfoMessage(message);
+                                                const linkedNews =
+                                                    getLinkedNews(
+                                                        message,
+                                                        newsById,
+                                                    );
+                                                const messageText =
+                                                    getMessageText(
+                                                        message,
+                                                        linkedNews,
+                                                    );
+                                                const newsTitle =
+                                                    getNewsTitle(linkedNews);
+                                                const newsBody =
+                                                    getNewsBody(linkedNews);
+                                                const newsImages =
+                                                    extractImageUrls([
+                                                        linkedNews,
+                                                        message,
+                                                    ]);
+                                                const visibleNewsImages =
+                                                    newsImages.filter(
+                                                        (src) =>
+                                                            !hiddenImageUrls[
+                                                                src
+                                                            ],
+                                                    );
+                                                const singleNewsImage =
+                                                    visibleNewsImages.length ===
+                                                    1;
+                                                const messageAttachments =
+                                                    extractMessageAttachments(
+                                                        message,
+                                                    );
+                                                const visibleImageAttachments =
+                                                    messageAttachments.filter(
+                                                        (attachment) =>
+                                                            attachment.isImage &&
+                                                            !hiddenImageUrls[
+                                                                attachment.url
+                                                            ],
+                                                    );
+                                                const fileAttachments =
+                                                    messageAttachments.filter(
+                                                        (attachment) =>
+                                                            !attachment.isImage,
+                                                    );
+                                                const singleAttachmentImage =
+                                                    visibleImageAttachments.length ===
+                                                    1;
+                                                const messageIsDeleted =
+                                                    isDeletedMessage(message);
+                                                const replyReferencePreview =
+                                                    getReplyPreviewForMessage(
+                                                        message,
+                                                        messageByUuid,
+                                                        newsById,
+                                                    );
+                                                const hideDuplicateAttachmentTitleText =
+                                                    shouldHideDuplicateAttachmentText(
+                                                        messageText,
+                                                        fileAttachments,
+                                                    );
+                                                const hideAttachmentLikeMessageText =
+                                                    (visibleImageAttachments.length >
+                                                        0 ||
+                                                        fileAttachments.length >
+                                                            0) &&
+                                                    (looksLikeAttachmentPathText(
+                                                        messageText,
+                                                    ) ||
+                                                        hideDuplicateAttachmentTitleText);
+                                                const showMessageText =
+                                                    Boolean(messageText) &&
+                                                    !hideAttachmentLikeMessageText;
+                                                const canReplyToMessage =
+                                                    canWriteInSelectedChat &&
+                                                    !info &&
+                                                    !messageIsDeleted &&
+                                                    Boolean(messageUuid);
+                                                const canDeleteMessage =
+                                                    !messageIsDeleted &&
+                                                    getMessageDeletePermission(
+                                                        message,
+                                                        canWriteInSelectedChat,
+                                                    ) &&
+                                                    Boolean(messageUuid);
+                                                const canViewMessageInfo =
+                                                    getMessageInfoPermission(
+                                                        message,
+                                                    ) && Boolean(messageUuid);
+                                                const canCopyMessage =
+                                                    !messageIsDeleted &&
+                                                    showMessageText;
+                                                const hasMenuActions =
+                                                    canReplyToMessage ||
+                                                    canCopyMessage ||
+                                                    canViewMessageInfo ||
+                                                    canDeleteMessage;
+                                                const isDeletingThisMessage =
+                                                    deletingMessageKey ===
+                                                    messageKey;
+                                                const isCopiedThisMessage =
+                                                    copiedMessageKey ===
+                                                    messageKey;
+                                                const linkClassName = info
+                                                    ? 'underline decoration-amber-400/80 underline-offset-2 text-amber-800 dark:text-amber-200 hover:text-amber-900 dark:hover:text-amber-100'
+                                                    : 'underline decoration-blue-400/80 underline-offset-2 text-blue-700 dark:text-blue-300 hover:text-blue-800 dark:hover:text-blue-200';
+
+                                                return (
+                                                    <div
+                                                        key={messageKey}
+                                                        className={`max-w-[90%] rounded-2xl border px-3 py-2 ${
+                                                            info
+                                                                ? 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20'
+                                                                : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800'
+                                                        }`}
+                                                    >
+                                                        <div className="flex items-center justify-between gap-4 mb-1">
+                                                            <span
+                                                                className={`text-xs font-semibold ${
+                                                                    info
+                                                                        ? 'text-amber-700 dark:text-amber-300'
+                                                                        : 'text-blue-600 dark:text-blue-400'
                                                                 }`}
                                                             >
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() =>
-                                                                        setLightboxImageUrl(
-                                                                            attachment.url,
-                                                                        )
+                                                                {getMessageSender(
+                                                                    message,
+                                                                )}
+                                                            </span>
+                                                            <div className="flex items-center gap-1">
+                                                                <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                                                                    {getMessageTime(
+                                                                        message,
+                                                                    )}
+                                                                </span>
+                                                                <SduiMessageActionsMenu
+                                                                    hasMenuActions={
+                                                                        hasMenuActions
                                                                     }
-                                                                    className="block w-full"
-                                                                >
-                                                                    <img
-                                                                        src={
-                                                                            attachment.url
-                                                                        }
-                                                                        alt={
-                                                                            attachment.name
-                                                                        }
-                                                                        loading="lazy"
-                                                                        className={`w-full bg-slate-100 dark:bg-slate-800 ${
-                                                                            singleAttachmentImage
-                                                                                ? 'h-auto max-h-112 object-contain'
-                                                                                : 'h-36 object-cover'
-                                                                        }`}
-                                                                        onError={() => {
-                                                                            setHiddenImageUrls(
-                                                                                (
-                                                                                    prev,
-                                                                                ) => {
-                                                                                    if (
-                                                                                        prev[
-                                                                                            attachment
-                                                                                                .url
-                                                                                        ]
-                                                                                    ) {
-                                                                                        return prev;
-                                                                                    }
-                                                                                    return {
-                                                                                        ...prev,
-                                                                                        [attachment.url]: true,
-                                                                                    };
-                                                                                },
-                                                                            );
-                                                                        }}
-                                                                    />
-                                                                </button>
-                                                                <a
-                                                                    href={
-                                                                        attachment.url
+                                                                    isOpen={
+                                                                        openMessageMenuKey ===
+                                                                        messageKey
                                                                     }
-                                                                    target="_blank"
-                                                                    rel="noreferrer"
-                                                                    download={
-                                                                        attachment.name
+                                                                    canReplyToMessage={
+                                                                        canReplyToMessage
                                                                     }
-                                                                    className="block px-2 py-1 text-xs text-blue-700 dark:text-blue-300 hover:underline truncate"
-                                                                    title={
-                                                                        attachment.name
+                                                                    canCopyMessage={
+                                                                        canCopyMessage
                                                                     }
-                                                                >
-                                                                    {
-                                                                        attachment.name
+                                                                    canViewMessageInfo={
+                                                                        canViewMessageInfo
                                                                     }
-                                                                </a>
+                                                                    canDeleteMessage={
+                                                                        canDeleteMessage
+                                                                    }
+                                                                    isCopiedThisMessage={
+                                                                        isCopiedThisMessage
+                                                                    }
+                                                                    isDeletingThisMessage={
+                                                                        isDeletingThisMessage
+                                                                    }
+                                                                    onToggle={(
+                                                                        event,
+                                                                    ) => {
+                                                                        event.stopPropagation();
+                                                                        setOpenMessageMenuKey(
+                                                                            (
+                                                                                current,
+                                                                            ) =>
+                                                                                current ===
+                                                                                messageKey
+                                                                                    ? null
+                                                                                    : messageKey,
+                                                                        );
+                                                                    }}
+                                                                    onReply={() => {
+                                                                        setReplyToMessage(
+                                                                            message,
+                                                                        );
+                                                                        setOpenMessageMenuKey(
+                                                                            null,
+                                                                        );
+                                                                    }}
+                                                                    onCopy={() => {
+                                                                        void handleCopyMessageText(
+                                                                            message,
+                                                                        );
+                                                                        setOpenMessageMenuKey(
+                                                                            null,
+                                                                        );
+                                                                    }}
+                                                                    onInfo={() => {
+                                                                        void handleOpenMessageInfo(
+                                                                            message,
+                                                                        );
+                                                                    }}
+                                                                    onDelete={() => {
+                                                                        handleRequestDeleteMessage(
+                                                                            message,
+                                                                        );
+                                                                    }}
+                                                                />
                                                             </div>
-                                                        ),
-                                                    )}
-                                                </div>
-                                            )}
-
-                                            {fileAttachments.length > 0 && (
-                                                <div className="mt-2 space-y-1">
-                                                    {fileAttachments.map(
-                                                        (attachment) => (
-                                                            <a
-                                                                key={`${getMessageKey(message)}-${attachment.url}`}
-                                                                href={
-                                                                    attachment.url
-                                                                }
-                                                                target="_blank"
-                                                                rel="noreferrer"
-                                                                download={
-                                                                    attachment.name
-                                                                }
-                                                                className="flex items-center justify-between gap-2 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 px-2 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                                            >
-                                                                <span
-                                                                    className="text-xs text-slate-700 dark:text-slate-200 truncate"
-                                                                    title={
-                                                                        attachment.name
-                                                                    }
-                                                                >
-                                                                    {
-                                                                        attachment.name
-                                                                    }
-                                                                </span>
-                                                                <span className="text-[10px] text-slate-500 dark:text-slate-400 shrink-0">
-                                                                    {formatFileSize(
-                                                                        attachment.size,
-                                                                    ) ||
-                                                                        'Download'}
-                                                                </span>
-                                                            </a>
-                                                        ),
-                                                    )}
-                                                </div>
-                                            )}
-
-                                            {actionKey === 'news.posted' &&
-                                                (newsTitle ||
-                                                    newsBody ||
-                                                    visibleNewsImages.length >
-                                                        0) && (
-                                                    <div className="mt-2 rounded-lg border border-amber-300/60 dark:border-amber-700/60 bg-white/70 dark:bg-slate-900/40 p-2">
-                                                        <div className="text-[11px] uppercase tracking-wide font-semibold text-amber-700 dark:text-amber-300 mb-1">
-                                                            News-Inhalt
                                                         </div>
-                                                        {newsTitle && (
-                                                            <div className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-1">
-                                                                {newsTitle}
+
+                                                        {replyReferencePreview && (
+                                                            <div className="mb-2 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/60 px-2.5 py-1.5">
+                                                                <div className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
+                                                                    Antwort auf{' '}
+                                                                    {
+                                                                        replyReferencePreview.sender
+                                                                    }
+                                                                    {replyReferencePreview.time
+                                                                        ? ` • ${replyReferencePreview.time}`
+                                                                        : ''}
+                                                                </div>
+                                                                <div className="mt-0.5 text-xs text-slate-700 dark:text-slate-200 line-clamp-2">
+                                                                    {replyReferencePreview.text ||
+                                                                        'Nachricht'}
+                                                                </div>
                                                             </div>
                                                         )}
-                                                        {newsBody && (
-                                                            <div className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap wrap-break-word">
-                                                                {newsBody}
+
+                                                        {showMessageText && (
+                                                            <div
+                                                                className={`text-sm whitespace-pre-wrap wrap-break-word ${
+                                                                    messageIsDeleted
+                                                                        ? 'italic text-slate-500 dark:text-slate-400'
+                                                                        : info
+                                                                          ? 'text-amber-900 dark:text-amber-100'
+                                                                          : 'text-slate-800 dark:text-slate-200'
+                                                                }`}
+                                                            >
+                                                                {renderTextWithLinks(
+                                                                    messageText,
+                                                                    linkClassName,
+                                                                )}
                                                             </div>
                                                         )}
-                                                        {visibleNewsImages.length >
+
+                                                        {visibleImageAttachments.length >
                                                             0 && (
                                                             <div
                                                                 className={`mt-2 ${
-                                                                    singleNewsImage
+                                                                    singleAttachmentImage
                                                                         ? ''
                                                                         : 'grid grid-cols-1 sm:grid-cols-2 gap-2'
                                                                 }`}
                                                             >
-                                                                {visibleNewsImages.map(
-                                                                    (src) => (
-                                                                        <button
-                                                                            type="button"
-                                                                            key={
-                                                                                src
-                                                                            }
-                                                                            onClick={() =>
-                                                                                setLightboxImageUrl(
-                                                                                    src,
-                                                                                )
-                                                                            }
-                                                                            className={`block rounded-md overflow-hidden border border-amber-200/70 dark:border-amber-700/50 ${
-                                                                                singleNewsImage
+                                                                {visibleImageAttachments.map(
+                                                                    (
+                                                                        attachment,
+                                                                    ) => (
+                                                                        <div
+                                                                            key={`${messageKey}-${attachment.url}`}
+                                                                            className={`rounded-md overflow-hidden border border-slate-200/80 dark:border-slate-700/70 bg-slate-50 dark:bg-slate-900/50 ${
+                                                                                singleAttachmentImage
                                                                                     ? 'w-full'
                                                                                     : ''
                                                                             }`}
                                                                         >
-                                                                            <img
-                                                                                src={
-                                                                                    src
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() =>
+                                                                                    setLightboxImageUrl(
+                                                                                        attachment.url,
+                                                                                    )
                                                                                 }
-                                                                                alt=""
-                                                                                loading="lazy"
-                                                                                className={`w-full bg-slate-100 dark:bg-slate-800 ${
-                                                                                    singleNewsImage
-                                                                                        ? 'h-auto max-h-112 object-contain'
-                                                                                        : 'h-36 object-cover'
-                                                                                }`}
-                                                                                onError={() => {
-                                                                                    setHiddenImageUrls(
-                                                                                        (
-                                                                                            prev,
-                                                                                        ) => {
-                                                                                            if (
-                                                                                                prev[
-                                                                                                    src
-                                                                                                ]
-                                                                                            ) {
-                                                                                                return prev;
-                                                                                            }
-                                                                                            return {
-                                                                                                ...prev,
-                                                                                                [src]: true,
-                                                                                            };
-                                                                                        },
-                                                                                    );
-                                                                                }}
-                                                                            />
-                                                                        </button>
+                                                                                className="block w-full"
+                                                                            >
+                                                                                <img
+                                                                                    src={
+                                                                                        attachment.url
+                                                                                    }
+                                                                                    alt={
+                                                                                        attachment.name
+                                                                                    }
+                                                                                    loading="lazy"
+                                                                                    className={`w-full bg-slate-100 dark:bg-slate-800 ${
+                                                                                        singleAttachmentImage
+                                                                                            ? 'h-auto max-h-112 object-contain'
+                                                                                            : 'h-36 object-cover'
+                                                                                    }`}
+                                                                                    onError={() => {
+                                                                                        setHiddenImageUrls(
+                                                                                            (
+                                                                                                prev,
+                                                                                            ) => {
+                                                                                                if (
+                                                                                                    prev[
+                                                                                                        attachment
+                                                                                                            .url
+                                                                                                    ]
+                                                                                                ) {
+                                                                                                    return prev;
+                                                                                                }
+                                                                                                return {
+                                                                                                    ...prev,
+                                                                                                    [attachment.url]: true,
+                                                                                                };
+                                                                                            },
+                                                                                        );
+                                                                                    }}
+                                                                                    onLoad={
+                                                                                        stickToBottomIfNeeded
+                                                                                    }
+                                                                                />
+                                                                            </button>
+                                                                            <a
+                                                                                href={
+                                                                                    attachment.url
+                                                                                }
+                                                                                target="_blank"
+                                                                                rel="noreferrer"
+                                                                                download={
+                                                                                    attachment.name
+                                                                                }
+                                                                                className="block px-2 py-1 text-xs text-blue-700 dark:text-blue-300 hover:underline truncate"
+                                                                                title={
+                                                                                    attachment.name
+                                                                                }
+                                                                            >
+                                                                                {getAttachmentDisplayName(
+                                                                                    attachment,
+                                                                                )}
+                                                                            </a>
+                                                                        </div>
                                                                     ),
                                                                 )}
                                                             </div>
                                                         )}
+
+                                                        {fileAttachments.length >
+                                                            0 && (
+                                                            <div className="mt-2 space-y-1">
+                                                                {fileAttachments.map(
+                                                                    (
+                                                                        attachment,
+                                                                    ) => (
+                                                                        <a
+                                                                            key={`${messageKey}-${attachment.url}`}
+                                                                            href={
+                                                                                attachment.url
+                                                                            }
+                                                                            target="_blank"
+                                                                            rel="noreferrer"
+                                                                            download={
+                                                                                attachment.name
+                                                                            }
+                                                                            className="flex min-w-0 items-center justify-between gap-2 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 px-2 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                                                        >
+                                                                            <span
+                                                                                className="min-w-0 text-xs text-slate-700 dark:text-slate-200 truncate"
+                                                                                title={
+                                                                                    attachment.name
+                                                                                }
+                                                                            >
+                                                                                {getAttachmentDisplayName(
+                                                                                    attachment,
+                                                                                )}
+                                                                            </span>
+                                                                            <span className="text-[10px] text-slate-500 dark:text-slate-400 shrink-0">
+                                                                                {formatFileSize(
+                                                                                    attachment.size,
+                                                                                ) ||
+                                                                                    'Download'}
+                                                                            </span>
+                                                                        </a>
+                                                                    ),
+                                                                )}
+                                                            </div>
+                                                        )}
+
+                                                        {actionKey ===
+                                                            'news.posted' &&
+                                                            (newsTitle ||
+                                                                newsBody ||
+                                                                visibleNewsImages.length >
+                                                                    0) && (
+                                                                <div className="mt-2 rounded-lg border border-amber-300/60 dark:border-amber-700/60 bg-white/70 dark:bg-slate-900/40 p-2">
+                                                                    <div className="text-[11px] uppercase tracking-wide font-semibold text-amber-700 dark:text-amber-300 mb-1">
+                                                                        News-Inhalt
+                                                                    </div>
+                                                                    {newsTitle && (
+                                                                        <div className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-1">
+                                                                            {
+                                                                                newsTitle
+                                                                            }
+                                                                        </div>
+                                                                    )}
+                                                                    {newsBody && (
+                                                                        <div className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap wrap-break-word">
+                                                                            {renderTextWithLinks(
+                                                                                newsBody,
+                                                                                'underline decoration-blue-400/70 underline-offset-2 text-blue-700 dark:text-blue-300 hover:text-blue-800 dark:hover:text-blue-200',
+                                                                            )}
+                                                                        </div>
+                                                                    )}
+                                                                    {visibleNewsImages.length >
+                                                                        0 && (
+                                                                        <div
+                                                                            className={`mt-2 ${
+                                                                                singleNewsImage
+                                                                                    ? ''
+                                                                                    : 'grid grid-cols-1 sm:grid-cols-2 gap-2'
+                                                                            }`}
+                                                                        >
+                                                                            {visibleNewsImages.map(
+                                                                                (
+                                                                                    src,
+                                                                                ) => (
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        key={
+                                                                                            src
+                                                                                        }
+                                                                                        onClick={() =>
+                                                                                            setLightboxImageUrl(
+                                                                                                src,
+                                                                                            )
+                                                                                        }
+                                                                                        className={`block rounded-md overflow-hidden border border-amber-200/70 dark:border-amber-700/50 ${
+                                                                                            singleNewsImage
+                                                                                                ? 'w-full'
+                                                                                                : ''
+                                                                                        }`}
+                                                                                    >
+                                                                                        <img
+                                                                                            src={
+                                                                                                src
+                                                                                            }
+                                                                                            alt=""
+                                                                                            loading="lazy"
+                                                                                            className={`w-full bg-slate-100 dark:bg-slate-800 ${
+                                                                                                singleNewsImage
+                                                                                                    ? 'h-auto max-h-112 object-contain'
+                                                                                                    : 'h-36 object-cover'
+                                                                                            }`}
+                                                                                            onError={() => {
+                                                                                                setHiddenImageUrls(
+                                                                                                    (
+                                                                                                        prev,
+                                                                                                    ) => {
+                                                                                                        if (
+                                                                                                            prev[
+                                                                                                                src
+                                                                                                            ]
+                                                                                                        ) {
+                                                                                                            return prev;
+                                                                                                        }
+                                                                                                        return {
+                                                                                                            ...prev,
+                                                                                                            [src]: true,
+                                                                                                        };
+                                                                                                    },
+                                                                                                );
+                                                                                            }}
+                                                                                            onLoad={
+                                                                                                stickToBottomIfNeeded
+                                                                                            }
+                                                                                        />
+                                                                                    </button>
+                                                                                ),
+                                                                            )}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )}
                                                     </div>
-                                                )}
-                                        </div>
+                                                );
+                                            })
+                                        )}
+                                        <div ref={messagesEndRef} />
+                                    </main>
+
+                                    <footer className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3">
+                                        {!canWriteInSelectedChat && (
+                                            <div className="mb-2 rounded-md border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-3 py-2 text-xs">
+                                                {oneWayDetected
+                                                    ? 'Dieser Chat steht aktuell auf "One-Way". Nur Administratoren duerfen schreiben oder eine Konversation eröffnen.'
+                                                    : 'Du hast in diesem Chat keine Schreibrechte.'}
+                                            </div>
+                                        )}
+                                        {replyPreview && (
+                                            <div className="mb-2 rounded-md border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 px-3 py-2">
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <div className="min-w-0">
+                                                        <div className="text-[11px] font-semibold text-blue-700 dark:text-blue-300">
+                                                            Antwort an{' '}
+                                                            {
+                                                                replyPreview.sender
+                                                            }
+                                                        </div>
+                                                        <div className="text-xs text-slate-700 dark:text-slate-200 line-clamp-2">
+                                                            {replyPreview.text ||
+                                                                'Nachricht'}
+                                                        </div>
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                            setReplyToMessage(
+                                                                null,
+                                                            )
+                                                        }
+                                                        className="text-[11px] rounded-full border border-blue-300 dark:border-blue-700 px-2 py-0.5 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/40"
+                                                    >
+                                                        Abbrechen
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
+                                        <form
+                                            onSubmit={handleSendMessage}
+                                            className="flex gap-2"
+                                        >
+                                            <input
+                                                type="text"
+                                                value={draft}
+                                                onChange={(e) =>
+                                                    setDraft(e.target.value)
+                                                }
+                                                placeholder={
+                                                    canWriteInSelectedChat
+                                                        ? replyPreview
+                                                            ? 'Antwort schreiben...'
+                                                            : 'Nachricht schreiben...'
+                                                        : oneWayDetected
+                                                          ? 'One-Way Chat: Schreiben ist nur fuer Administratoren erlaubt.'
+                                                          : 'Schreiben in diesem Chat nicht erlaubt.'
+                                                }
+                                                disabled={
+                                                    !canWriteInSelectedChat
+                                                }
+                                                className={`flex-1 rounded-full px-4 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 border border-transparent focus:outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-70 ${
+                                                    canWriteInSelectedChat
+                                                        ? 'bg-slate-100 dark:bg-slate-800'
+                                                        : 'bg-slate-200 dark:bg-slate-700'
+                                                }`}
+                                            />
+                                            <button
+                                                type="submit"
+                                                disabled={
+                                                    !canWriteInSelectedChat ||
+                                                    sending ||
+                                                    !draft.trim()
+                                                }
+                                                className="rounded-full px-4 py-2 text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                                {replyPreview
+                                                    ? 'Antworten'
+                                                    : 'Senden'}
+                                            </button>
+                                        </form>
+                                    </footer>
+                                </>
+                            )}
+                        </section>
+                    </>
+                ) : (
+                    <section className="flex-1 min-w-0 flex flex-col bg-slate-50 dark:bg-slate-950">
+                        <header className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+                            <div className="relative">
+                                <input
+                                    value={newsSearchQuery}
+                                    onChange={(event) =>
+                                        setNewsSearchQuery(event.target.value)
+                                    }
+                                    type="search"
+                                    placeholder="News suchen"
+                                    className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100"
+                                />
+                            </div>
+                        </header>
+
+                        <main
+                            onScroll={handleNewsScroll}
+                            className="flex-1 overflow-y-auto p-4 space-y-4"
+                        >
+                            {filteredNewsItems.length === 0 ? (
+                                <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 text-sm text-slate-500 dark:text-slate-400">
+                                    Keine News gefunden.
+                                </div>
+                            ) : (
+                                filteredNewsItems.map((news, index) => {
+                                    const newsId = getNewsItemId(news, index);
+                                    const newsTitle = getNewsTitle(news);
+                                    const newsBody = getNewsBody(news);
+                                    const newsImages = extractImageUrls(news);
+                                    const visibleImages = newsImages.filter(
+                                        (src) => !hiddenImageUrls[src],
+                                    );
+                                    const isExpanded = Boolean(
+                                        expandedNewsIds[newsId],
+                                    );
+                                    const showExpandToggle =
+                                        newsBody.length > 260;
+
+                                    return (
+                                        <article
+                                            key={newsId}
+                                            className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-sm p-4"
+                                        >
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <span className="rounded-full bg-blue-100 dark:bg-blue-900/40 px-2 py-0.5 text-xs font-semibold text-blue-700 dark:text-blue-300">
+                                                    {getNewsAuthor(news)}
+                                                </span>
+                                                <span className="rounded-full bg-slate-100 dark:bg-slate-800 px-2 py-0.5 text-xs font-semibold text-slate-600 dark:text-slate-300">
+                                                    {getNewsAudience(news)}
+                                                </span>
+                                            </div>
+
+                                            {getNewsDateTime(news) && (
+                                                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                                                    {getNewsDateTime(news)}
+                                                </p>
+                                            )}
+
+                                            {newsTitle && (
+                                                <h3 className="mt-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">
+                                                    {newsTitle}
+                                                </h3>
+                                            )}
+
+                                            {newsBody && (
+                                                <div
+                                                    className={`mt-3 text-base text-slate-700 dark:text-slate-300 whitespace-pre-wrap ${
+                                                        isExpanded
+                                                            ? ''
+                                                            : 'line-clamp-5'
+                                                    }`}
+                                                >
+                                                    {renderTextWithLinks(
+                                                        newsBody,
+                                                        'underline decoration-blue-400/70 underline-offset-2 text-blue-700 dark:text-blue-300 hover:text-blue-800 dark:hover:text-blue-200',
+                                                    )}
+                                                </div>
+                                            )}
+
+                                            {showExpandToggle && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        setExpandedNewsIds(
+                                                            (current) => {
+                                                                if (
+                                                                    current[
+                                                                        newsId
+                                                                    ]
+                                                                ) {
+                                                                    const next =
+                                                                        {
+                                                                            ...current,
+                                                                        };
+                                                                    delete next[
+                                                                        newsId
+                                                                    ];
+                                                                    return next;
+                                                                }
+                                                                return {
+                                                                    ...current,
+                                                                    [newsId]: true,
+                                                                };
+                                                            },
+                                                        )
+                                                    }
+                                                    className="mt-3 text-sm font-medium text-pink-600 hover:text-pink-700 dark:text-pink-400 dark:hover:text-pink-300"
+                                                >
+                                                    {isExpanded
+                                                        ? 'Weniger'
+                                                        : 'Mehr'}
+                                                </button>
+                                            )}
+
+                                            {visibleImages.length > 0 && (
+                                                <div className="mt-4 space-y-2">
+                                                    {visibleImages.map(
+                                                        (src) => (
+                                                            <button
+                                                                type="button"
+                                                                key={`${newsId}-${src}`}
+                                                                onClick={() =>
+                                                                    setLightboxImageUrl(
+                                                                        src,
+                                                                    )
+                                                                }
+                                                                className="block w-full rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700"
+                                                            >
+                                                                <img
+                                                                    src={src}
+                                                                    alt=""
+                                                                    loading="lazy"
+                                                                    className="w-full h-auto max-h-[560px] object-cover bg-slate-100 dark:bg-slate-800"
+                                                                    onError={() => {
+                                                                        setHiddenImageUrls(
+                                                                            (
+                                                                                prev,
+                                                                            ) => {
+                                                                                if (
+                                                                                    prev[
+                                                                                        src
+                                                                                    ]
+                                                                                ) {
+                                                                                    return prev;
+                                                                                }
+                                                                                return {
+                                                                                    ...prev,
+                                                                                    [src]: true,
+                                                                                };
+                                                                            },
+                                                                        );
+                                                                    }}
+                                                                />
+                                                            </button>
+                                                        ),
+                                                    )}
+                                                </div>
+                                            )}
+                                        </article>
                                     );
                                 })
                             )}
-                            <div ref={messagesEndRef} />
-                        </main>
 
-                        <footer className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3">
-                            {!canWriteInSelectedChat && (
-                                <div className="mb-2 rounded-md border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-3 py-2 text-xs">
-                                    {oneWayDetected
-                                        ? 'Dieser Chat steht aktuell auf "One-Way". Nur Administratoren duerfen schreiben oder eine Konversation eroeffnen.'
-                                        : 'Du hast in diesem Chat keine Schreibrechte.'}
+                            {loadingNews && (
+                                <div className="flex justify-center py-2">
+                                    <div className="h-7 w-7 rounded-full border-2 border-slate-300 border-t-blue-600 animate-spin" />
                                 </div>
                             )}
-                            <form
-                                onSubmit={handleSendMessage}
-                                className="flex gap-2"
-                            >
-                                <input
-                                    type="text"
-                                    value={draft}
-                                    onChange={(e) => setDraft(e.target.value)}
-                                    placeholder={
-                                        canWriteInSelectedChat
-                                            ? 'Nachricht schreiben...'
-                                            : oneWayDetected
-                                              ? 'One-Way Chat: Schreiben ist nur fuer Administratoren erlaubt.'
-                                              : 'Schreiben in diesem Chat nicht erlaubt.'
-                                    }
-                                    disabled={!canWriteInSelectedChat}
-                                    className={`flex-1 rounded-full px-4 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 border border-transparent focus:outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-70 ${
-                                        canWriteInSelectedChat
-                                            ? 'bg-slate-100 dark:bg-slate-800'
-                                            : 'bg-slate-200 dark:bg-slate-700'
-                                    }`}
-                                />
-                                <button
-                                    type="submit"
-                                    disabled={
-                                        !canWriteInSelectedChat ||
-                                        sending ||
-                                        !draft.trim()
-                                    }
-                                    className="rounded-full px-4 py-2 text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                                >
-                                    Senden
-                                </button>
-                            </form>
-                        </footer>
-                    </>
+                        </main>
+                    </section>
                 )}
-            </section>
+            </div>
+
+            <SduiMessageInfoModal
+                messageInfoTarget={messageInfoTarget}
+                loadingMessageReaders={loadingMessageReaders}
+                messageInfoError={messageInfoError}
+                messageReaders={messageReaders}
+                serializedMessageInfo={serializedMessageInfo}
+                onClose={() => setMessageInfoTarget(null)}
+                getMessageSender={getMessageSender}
+                getMessageDateTime={getMessageDateTime}
+                getMessageUuid={getMessageUuid}
+                getReaderName={getReaderName}
+            />
+
+            <SduiDeleteConfirmModal
+                isOpen={Boolean(deleteTargetPreview)}
+                sender={deleteTargetPreview?.sender || ''}
+                messagePreview={deleteTargetPreview?.text || ''}
+                isDeleting={
+                    Boolean(deleteTargetPreview?.key) &&
+                    deletingMessageKey === deleteTargetPreview?.key
+                }
+                onCancel={() => setDeleteTargetMessage(null)}
+                onConfirm={() => {
+                    void handleConfirmDeleteMessage();
+                }}
+            />
 
             {lightboxImageUrl && (
                 <div

@@ -34,11 +34,11 @@ export default function SduiPanel({ isOpen, onClose }: SduiPanelProps) {
             onClick={handleBackdropClick}
         >
             <div
-                className={`w-full max-w-md md:max-w-5xl bg-white dark:bg-slate-900 shadow-xl h-full flex flex-col transform transition-transform duration-300 ${animating ? 'translate-x-0' : 'translate-x-full'}`}
+                className={`w-full max-w-md md:max-w-5xl bg-white dark:bg-slate-900 shadow-xl h-dvh md:h-full min-h-0 flex flex-col transition-transform duration-300 ${animating ? '' : 'translate-x-full'}`}
             >
                 <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800">
                     <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
-                        SDUI Chats
+                        SDUI
                     </h2>
                     <button
                         onClick={onClose}
@@ -59,7 +59,7 @@ export default function SduiPanel({ isOpen, onClose }: SduiPanelProps) {
                         </svg>
                     </button>
                 </div>
-                <div className="flex-1 overflow-hidden w-full h-full">
+                <div className="min-h-0 flex-1 overflow-hidden w-full">
                     <SduiChat />
                 </div>
             </div>
