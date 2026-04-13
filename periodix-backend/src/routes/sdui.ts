@@ -125,7 +125,7 @@ router.post('/auth', authMiddleware, async (req, res) => {
             return res.status(401).json({
                 error: hasSchoolResolveError
                     ? 'Unable to resolve identity provider URL for school. Please configure SDUI_DEFAULT_SCHOOL with the correct SDUI school link.'
-                    : msg || 'SDUI Authentication failed',
+                    : 'SDUI Authentication failed',
             });
         }
 
@@ -159,7 +159,7 @@ router.post('/auth', authMiddleware, async (req, res) => {
         console.error('SDUI Auth err:', e);
         // Do not return the entire 'e' object as JSON to the client to avoid leaking upstream response configurations
         res.status(401).json({
-            error: e?.message || 'SDUI Authentication failed',
+            error: 'SDUI Authentication failed',
         });
     }
 });
@@ -192,7 +192,7 @@ router.get('/chats/:chatId/messages', authMiddleware, async (req, res) => {
     } catch (e: any) {
         console.error('Fetch messages err:', e);
         res.status(500).json({
-            error: e?.message || 'Failed to fetch messages',
+            error: 'Failed to fetch messages',
         });
     }
 });
@@ -226,7 +226,7 @@ router.get('/chats/:chatId', authMiddleware, async (req, res) => {
     } catch (e: any) {
         console.error('Fetch chat detail err:', e);
         res.status(500).json({
-            error: e?.message || 'Failed to fetch chat detail',
+            error: 'Failed to fetch chat detail',
         });
     }
 });
@@ -256,7 +256,7 @@ router.get('/news', authMiddleware, async (req, res) => {
         res.json(news);
     } catch (e: any) {
         console.error('Fetch news err:', e);
-        res.status(500).json({ error: e?.message || 'Failed to fetch news' });
+        res.status(500).json({ error: 'Failed to fetch news' });
     }
 });
 
@@ -291,7 +291,7 @@ router.post('/chats/:chatId/messages', authMiddleware, async (req, res) => {
         res.json(result);
     } catch (e: any) {
         console.error('Send message err:', e);
-        res.status(500).json({ error: e?.message || 'Failed to send message' });
+        res.status(500).json({ error: 'Failed to send message' });
     }
 });
 
@@ -340,7 +340,7 @@ router.post(
         } catch (e: any) {
             console.error('Reply message err:', e);
             res.status(500).json({
-                error: e?.message || 'Failed to send reply message',
+                error: 'Failed to send reply message',
             });
         }
     },
@@ -379,7 +379,7 @@ router.delete(
         } catch (e: any) {
             console.error('Delete message err:', e);
             res.status(500).json({
-                error: e?.message || 'Failed to delete message',
+                error: 'Failed to delete message',
             });
         }
     },
@@ -428,7 +428,7 @@ router.get(
         } catch (e: any) {
             console.error('Fetch message readers err:', e);
             res.status(500).json({
-                error: e?.message || 'Failed to fetch message readers',
+                error: 'Failed to fetch message readers',
             });
         }
     },

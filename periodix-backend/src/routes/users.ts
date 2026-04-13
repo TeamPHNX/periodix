@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authMiddleware } from '../server/authMiddleware.js';
 import { prisma } from '../store/prisma.js';
-import jwt from 'jsonwebtoken';
+import { WHITELIST_ENABLED } from '../server/config.js';
 
 const router = Router();
 
@@ -18,6 +18,24 @@ const preferencesUpdateSchema = z.object({
     onboardingCompleted: z.boolean().optional(),
 });
 
+async function hasActiveWhitelistAccess(userId: string): Promise<boolean> {
+    if (!WHITELIST_ENABLED) return true;
+
+    const requester = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { username: true },
+    });
+
+    if (!requester?.username) return false;
+
+    const usernameRule = await (prisma as any).whitelistRule.findFirst({
+        where: { value: requester.username.toLowerCase() },
+        select: { id: true },
+    });
+
+    return Boolean(usernameRule);
+}
+
 // Authenticated user search (by username/displayName)
 // NOTE: Consider adding rate limiting in front of this route in production.
 router.get('/search', authMiddleware, async (req, res) => {
@@ -27,17 +45,7 @@ router.get('/search', authMiddleware, async (req, res) => {
     const requesterId = req.user!.id;
 
     try {
-        // Check if user is admin
-        let isAdmin = false;
-        try {
-            const auth = req.headers.authorization || '';
-            const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-            const decoded: any = jwt.verify(
-                token,
-                process.env.JWT_SECRET || 'dev-secret'
-            );
-            isAdmin = Boolean(decoded?.isAdmin);
-        } catch {}
+        const isAdmin = Boolean(req.user?.isAdmin);
 
         // Admins can search all users
         if (isAdmin) {
@@ -102,13 +110,12 @@ router.get('/search', authMiddleware, async (req, res) => {
 
         const sharedUserIds = new Set(sharedWith.map((s: any) => s.ownerId));
         const filteredUsers = usersWithSharing.filter((u: any) =>
-            sharedUserIds.has(u.id)
+            sharedUserIds.has(u.id),
         );
 
         res.json({ users: filteredUsers });
-    } catch (e: any) {
-        const msg = e?.message || 'Search failed';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({ error: 'Search failed' });
     }
 });
 
@@ -120,6 +127,11 @@ router.get('/search-to-share', authMiddleware, async (req, res) => {
     const requesterId = req.user!.id;
 
     try {
+        const hasWhitelistAccess = await hasActiveWhitelistAccess(requesterId);
+        if (!hasWhitelistAccess) {
+            return res.json({ users: [] });
+        }
+
         // Check global sharing setting
         const appSettings = await (prisma as any).appSettings.findFirst();
         if (appSettings && !appSettings.globalSharingEnabled) {
@@ -127,7 +139,7 @@ router.get('/search-to-share', authMiddleware, async (req, res) => {
         }
 
         // Find all users matching the search query, excluding self
-        const users = await prisma.user.findMany({
+        const users = await (prisma as any).user.findMany({
             where: {
                 AND: [
                     {
@@ -141,6 +153,7 @@ router.get('/search-to-share', authMiddleware, async (req, res) => {
                             },
                         ],
                     },
+                    { shareSearchVisible: true },
                     { id: { not: requesterId } }, // Exclude self
                 ],
             },
@@ -150,9 +163,8 @@ router.get('/search-to-share', authMiddleware, async (req, res) => {
         });
 
         res.json({ users });
-    } catch (e: any) {
-        const msg = e?.message || 'Search failed';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({ error: 'Search failed' });
     }
 });
 
@@ -182,9 +194,8 @@ router.patch('/me', authMiddleware, async (req, res) => {
             },
         });
         res.json({ user });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to update profile';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to update profile' });
     }
 });
 
@@ -204,9 +215,8 @@ router.get('/preferences', authMiddleware, async (req, res) => {
             : [];
         const onboardingCompleted: boolean = Boolean(user?.onboardingCompleted);
         res.json({ hiddenSubjects, onboardingCompleted });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to load preferences';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({ error: 'Failed to load preferences' });
     }
 });
 
@@ -221,7 +231,7 @@ router.put('/preferences', authMiddleware, async (req, res) => {
         if (parsed.data.hiddenSubjects !== undefined) {
             // De-duplicate and sort for stability
             const unique = Array.from(new Set(parsed.data.hiddenSubjects)).sort(
-                (a, b) => a.localeCompare(b)
+                (a, b) => a.localeCompare(b),
             );
             data.hiddenSubjects = unique;
         }
@@ -241,8 +251,7 @@ router.put('/preferences', authMiddleware, async (req, res) => {
             hiddenSubjects: updated.hiddenSubjects || [],
             onboardingCompleted: Boolean(updated.onboardingCompleted),
         });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to update preferences';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to update preferences' });
     }
 });

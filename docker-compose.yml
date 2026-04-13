@@ -5,9 +5,9 @@ services:
         env_file:
             - .env
         environment:
-            # Pulled from .env (POSTGRES_USER / POSTGRES_PASSWORD); defaults keep dev simple
-            POSTGRES_USER: ${POSTGRES_USER:-postgres}
-            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+            # Pulled from .env
+            POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
             POSTGRES_DB: periodix
         ports:
             - '5432:5432'
@@ -30,12 +30,13 @@ services:
             - .env
         environment:
             # Use dynamic credentials so changing them in .env propagates
-            DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/periodix?schema=public
-            JWT_SECRET: ${JWT_SECRET}
-            PORT: ${PORT}
-            PERIODIX_MASTER_KEY: ${PERIODIX_MASTER_KEY}
-            # Do not override CORS_ORIGIN so env file or runtime env controls it; if unset, backend reflects Origin
-            CORS_ORIGIN: ${CORS_ORIGIN}
+            DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/periodix?schema=public
+            NODE_ENV: ${NODE_ENV:?NODE_ENV must be set in .env}
+            JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+            PORT: ${PORT:-3001}
+            PERIODIX_MASTER_KEY: ${PERIODIX_MASTER_KEY:?PERIODIX_MASTER_KEY must be set in .env}
+            # Set CORS_ORIGIN explicitly in .env. For local multi-LAN-IP dev, use CORS_ORIGIN=*.
+            CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN must be set in .env}
             # Skip prisma generate at runtime because it's already done in build stage; set to 0 to force regenerate
             PRISMA_SKIP_RUNTIME_GENERATE: 1
         ports:

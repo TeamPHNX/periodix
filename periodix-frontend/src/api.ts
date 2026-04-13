@@ -24,7 +24,7 @@ export function setGlobalLogoutHandler(handler: () => void) {
 }
 
 export function setGlobalTokenUpdateHandler(
-    handler: (newToken: string) => void
+    handler: (newToken: string) => void,
 ) {
     globalTokenUpdateHandler = handler;
 }
@@ -47,7 +47,7 @@ function handleTokenRefresh(response: Response): void {
 
 export async function api<T>(
     path: string,
-    opts: RequestInit & { token?: string } = {}
+    opts: RequestInit & { token?: string } = {},
 ): Promise<T> {
     // Prefer configured API base; otherwise, build relative to current host
     // This ensures requests go to the same IP/host the site was loaded from
@@ -147,11 +147,11 @@ export async function api<T>(
 
 // Lesson color API functions
 export async function getLessonColors(
-    token: string
+    token: string,
 ): Promise<{ colors: LessonColors; offsets: LessonOffsets }> {
     return api<{ colors: LessonColors; offsets: LessonOffsets }>(
         '/api/lesson-colors/my-colors',
-        { token }
+        { token },
     );
 }
 
@@ -164,7 +164,7 @@ export async function setLessonColor(
     lessonName: string,
     color: string,
     viewingUserId?: string,
-    offset?: number
+    offset?: number,
 ): Promise<{ success: boolean; type?: string }> {
     const body: {
         lessonName: string;
@@ -182,14 +182,14 @@ export async function setLessonColor(
             method: 'POST',
             token,
             body: JSON.stringify(body),
-        }
+        },
     );
 }
 
 export async function removeLessonColor(
     token: string,
     lessonName: string,
-    viewingUserId?: string
+    viewingUserId?: string,
 ): Promise<{ success: boolean; type?: string }> {
     const body: { lessonName: string; viewingUserId?: string } = { lessonName };
     if (viewingUserId) {
@@ -201,12 +201,12 @@ export async function removeLessonColor(
             method: 'DELETE',
             token,
             body: JSON.stringify(body),
-        }
+        },
     );
 }
 
 export async function getDefaultLessonColors(
-    token: string
+    token: string,
 ): Promise<LessonColors> {
     return api<LessonColors>('/api/lesson-colors/defaults', { token });
 }
@@ -214,7 +214,7 @@ export async function getDefaultLessonColors(
 export async function setDefaultLessonColor(
     token: string,
     lessonName: string,
-    color: string
+    color: string,
 ): Promise<{ success: boolean }> {
     return api<{ success: boolean }>('/api/lesson-colors/set-default', {
         method: 'POST',
@@ -226,6 +226,7 @@ export async function setDefaultLessonColor(
 // Sharing API functions
 export type SharingSettings = {
     sharingEnabled: boolean;
+    listedInShareSearch: boolean;
     sharingWith: Array<{ id: string; username: string; displayName?: string }>;
     globalSharingEnabled: boolean;
     isAdmin: boolean;
@@ -233,14 +234,14 @@ export type SharingSettings = {
 };
 
 export async function getSharingSettings(
-    token: string
+    token: string,
 ): Promise<SharingSettings> {
     return api<SharingSettings>('/api/sharing/settings', { token });
 }
 
 export async function updateSharingEnabled(
     token: string,
-    enabled: boolean
+    enabled: boolean,
 ): Promise<{ success: boolean }> {
     return api<{ success: boolean }>('/api/sharing/settings', {
         method: 'PUT',
@@ -249,9 +250,20 @@ export async function updateSharingEnabled(
     });
 }
 
+export async function updateSharingListing(
+    token: string,
+    listedInShareSearch: boolean,
+): Promise<{ success: boolean }> {
+    return api<{ success: boolean }>('/api/sharing/settings', {
+        method: 'PUT',
+        token,
+        body: JSON.stringify({ listedInShareSearch }),
+    });
+}
+
 export async function shareWithUser(
     token: string,
-    userId: string
+    userId: string,
 ): Promise<{ success: boolean; user?: User }> {
     return api<{ success: boolean; user?: User }>('/api/sharing/share', {
         method: 'POST',
@@ -262,7 +274,7 @@ export async function shareWithUser(
 
 export async function stopSharingWithUser(
     token: string,
-    userId: string
+    userId: string,
 ): Promise<{ success: boolean }> {
     return api<{ success: boolean }>(`/api/sharing/share/${userId}`, {
         method: 'DELETE',
@@ -272,7 +284,7 @@ export async function stopSharingWithUser(
 
 export async function updateGlobalSharing(
     token: string,
-    enabled: boolean
+    enabled: boolean,
 ): Promise<{ success: boolean }> {
     return api<{ success: boolean }>('/api/sharing/global', {
         method: 'PUT',
@@ -283,7 +295,7 @@ export async function updateGlobalSharing(
 
 export async function searchUsersToShare(
     token: string,
-    query: string
+    query: string,
 ): Promise<{
     users: Array<{ id: string; username: string; displayName?: string }>;
 }> {
@@ -296,7 +308,7 @@ export async function searchUsersToShare(
 export async function updateUserDisplayName(
     token: string,
     userId: string,
-    displayName: string | null
+    displayName: string | null,
 ): Promise<{
     user: { id: string; username: string; displayName: string | null };
 }> {
@@ -312,7 +324,7 @@ export async function updateUserDisplayName(
 // New: current user can update their own display name and timezone
 export async function updateMyProfile(
     token: string,
-    data: { displayName?: string | null; timezone?: string }
+    data: { displayName?: string | null; timezone?: string },
 ): Promise<{
     user: {
         id: string;
@@ -338,13 +350,13 @@ export async function updateMyProfile(
 // New: Whitelist management (username-only)
 export type WhitelistRule = { id: string; value: string; createdAt: string };
 export async function listWhitelist(
-    token: string
+    token: string,
 ): Promise<{ rules: WhitelistRule[] }> {
     return api<{ rules: WhitelistRule[] }>(`/api/admin/whitelist`, { token });
 }
 export async function addWhitelistRule(
     token: string,
-    value: string
+    value: string,
 ): Promise<{ rule: WhitelistRule; created: boolean }> {
     return api<{ rule: WhitelistRule; created: boolean }>(
         `/api/admin/whitelist`,
@@ -352,12 +364,12 @@ export async function addWhitelistRule(
             method: 'POST',
             token,
             body: JSON.stringify({ value }),
-        }
+        },
     );
 }
 export async function deleteWhitelistRule(
     token: string,
-    id: string
+    id: string,
 ): Promise<{ ok: boolean }> {
     return api<{ ok: boolean }>(`/api/admin/whitelist/${id}`, {
         method: 'DELETE',
@@ -375,19 +387,19 @@ export type AccessRequest = {
 
 export async function createAccessRequest(
     username: string,
-    message?: string
-): Promise<{ request: AccessRequest; success: boolean }> {
-    return api<{ request: AccessRequest; success: boolean }>(
+    message?: string,
+): Promise<{ request?: AccessRequest; success: boolean; message?: string }> {
+    return api<{ request?: AccessRequest; success: boolean; message?: string }>(
         '/api/access-request',
         {
             method: 'POST',
             body: JSON.stringify({ username, message }),
-        }
+        },
     );
 }
 
 export async function listAccessRequests(
-    token: string
+    token: string,
 ): Promise<{ requests: AccessRequest[] }> {
     return api<{ requests: AccessRequest[] }>('/api/admin/access-requests', {
         token,
@@ -396,20 +408,20 @@ export async function listAccessRequests(
 
 export async function acceptAccessRequest(
     token: string,
-    id: string
+    id: string,
 ): Promise<{ success: boolean; message?: string }> {
     return api<{ success: boolean; message?: string }>(
         `/api/admin/access-requests/${id}/accept`,
         {
             method: 'POST',
             token,
-        }
+        },
     );
 }
 
 export async function declineAccessRequest(
     token: string,
-    id: string
+    id: string,
 ): Promise<{ success: boolean }> {
     return api<{ success: boolean }>(`/api/admin/access-requests/${id}`, {
         method: 'DELETE',
@@ -438,7 +450,7 @@ export async function listAllUsers(token: string): Promise<{
 
 export async function deleteUser(
     token: string,
-    userId: string
+    userId: string,
 ): Promise<{ ok: boolean; count: number }> {
     return api<{ ok: boolean; count: number }>(`/api/admin/users/${userId}`, {
         method: 'DELETE',
@@ -449,7 +461,7 @@ export async function deleteUser(
 export async function adminUpdateUserDisplayName(
     token: string,
     userId: string,
-    displayName: string | null
+    displayName: string | null,
 ): Promise<{
     user: {
         id: string;
@@ -475,7 +487,7 @@ export async function adminUpdateUserDisplayName(
 // User-manager management (admin only)
 export async function grantUserManagerStatus(
     token: string,
-    userId: string
+    userId: string,
 ): Promise<{
     user: {
         id: string;
@@ -499,7 +511,7 @@ export async function grantUserManagerStatus(
 
 export async function revokeUserManagerStatus(
     token: string,
-    userId: string
+    userId: string,
 ): Promise<{
     user: {
         id: string;
@@ -525,7 +537,7 @@ export async function revokeUserManagerStatus(
 export async function userManagerUpdateUserDisplayName(
     token: string,
     userId: string,
-    displayName: string | null
+    displayName: string | null,
 ): Promise<{
     user: { id: string; username: string; displayName: string | null };
 }> {
@@ -539,7 +551,7 @@ export async function userManagerUpdateUserDisplayName(
 }
 
 export async function userManagerListWhitelist(
-    token: string
+    token: string,
 ): Promise<{ rules: WhitelistRule[] }> {
     return api<{ rules: WhitelistRule[] }>('/api/user-manager/whitelist', {
         token,
@@ -548,7 +560,7 @@ export async function userManagerListWhitelist(
 
 export async function userManagerAddWhitelistRule(
     token: string,
-    value: string
+    value: string,
 ): Promise<{ rule: WhitelistRule; created: boolean }> {
     return api<{ rule: WhitelistRule; created: boolean }>(
         '/api/user-manager/whitelist',
@@ -556,13 +568,13 @@ export async function userManagerAddWhitelistRule(
             method: 'POST',
             token,
             body: JSON.stringify({ value }),
-        }
+        },
     );
 }
 
 export async function userManagerDeleteWhitelistRule(
     token: string,
-    id: string
+    id: string,
 ): Promise<{ ok: boolean }> {
     return api<{ ok: boolean }>(`/api/user-manager/whitelist/${id}`, {
         method: 'DELETE',
@@ -571,43 +583,43 @@ export async function userManagerDeleteWhitelistRule(
 }
 
 export async function userManagerListAccessRequests(
-    token: string
+    token: string,
 ): Promise<{ requests: AccessRequest[] }> {
     return api<{ requests: AccessRequest[] }>(
         '/api/user-manager/access-requests',
-        { token }
+        { token },
     );
 }
 
 export async function userManagerAcceptAccessRequest(
     token: string,
-    id: string
+    id: string,
 ): Promise<{ success: boolean; message?: string }> {
     return api<{ success: boolean; message?: string }>(
         `/api/user-manager/access-requests/${id}/accept`,
         {
             method: 'POST',
             token,
-        }
+        },
     );
 }
 
 export async function userManagerDeclineAccessRequest(
     token: string,
-    id: string
+    id: string,
 ): Promise<{ success: boolean }> {
     return api<{ success: boolean }>(
         `/api/user-manager/access-requests/${id}`,
         {
             method: 'DELETE',
             token,
-        }
+        },
     );
 }
 
 // Notification API functions
 export async function getNotifications(
-    token: string
+    token: string,
 ): Promise<{ notifications: Notification[] }> {
     return api<{ notifications: Notification[] }>('/api/notifications', {
         token,
@@ -616,19 +628,19 @@ export async function getNotifications(
 
 export async function markNotificationAsRead(
     token: string,
-    notificationId: string
+    notificationId: string,
 ): Promise<{ success: boolean }> {
     return api<{ success: boolean }>(
         `/api/notifications/${notificationId}/read`,
         {
             method: 'PATCH',
             token,
-        }
+        },
     );
 }
 
 export async function markAllNotificationsAsRead(
-    token: string
+    token: string,
 ): Promise<{ success: boolean }> {
     return api<{ success: boolean }>('/api/notifications/read-all', {
         method: 'PATCH',
@@ -638,7 +650,7 @@ export async function markAllNotificationsAsRead(
 
 export async function deleteNotification(
     token: string,
-    notificationId: string
+    notificationId: string,
 ): Promise<{ success: boolean }> {
     return api<{ success: boolean }>(`/api/notifications/${notificationId}`, {
         method: 'DELETE',
@@ -647,11 +659,11 @@ export async function deleteNotification(
 }
 
 export async function getNotificationSettings(
-    token: string
+    token: string,
 ): Promise<{ settings: NotificationSettings }> {
     return api<{ settings: NotificationSettings }>(
         '/api/notifications/settings',
-        { token }
+        { token },
     );
 }
 
@@ -669,7 +681,7 @@ export async function updateNotificationSettings(
             | 'upcomingLessonsEnabled'
             | 'devicePreferences'
         >
-    >
+    >,
 ): Promise<{ settings: NotificationSettings; success: boolean }> {
     return api<{ settings: NotificationSettings; success: boolean }>(
         '/api/notifications/settings',
@@ -677,7 +689,7 @@ export async function updateNotificationSettings(
             method: 'PUT',
             token,
             body: JSON.stringify(settings),
-        }
+        },
     );
 }
 
@@ -689,7 +701,7 @@ export async function subscribeToPushNotifications(
         auth: string;
         userAgent?: string;
         deviceType?: 'mobile' | 'desktop' | 'tablet';
-    }
+    },
 ): Promise<{ subscription: Record<string, unknown>; success: boolean }> {
     return api<{ subscription: Record<string, unknown>; success: boolean }>(
         '/api/notifications/subscribe',
@@ -697,13 +709,13 @@ export async function subscribeToPushNotifications(
             method: 'POST',
             token,
             body: JSON.stringify(subscription),
-        }
+        },
     );
 }
 
 export async function unsubscribeFromPushNotifications(
     token: string,
-    endpoint: string
+    endpoint: string,
 ): Promise<{ success: boolean }> {
     // Single canonical form: query parameter only (prevents accidental legacy path usage)
     return api<{ success: boolean }>(
@@ -711,7 +723,7 @@ export async function unsubscribeFromPushNotifications(
         {
             method: 'DELETE',
             token,
-        }
+        },
     );
 }
 
@@ -722,11 +734,11 @@ export async function getVapidPublicKey(): Promise<{ publicKey: string }> {
 
 // Admin notification settings
 export async function getAdminNotificationSettings(
-    token: string
+    token: string,
 ): Promise<{ settings: AdminNotificationSettings }> {
     return api<{ settings: AdminNotificationSettings }>(
         '/api/admin/notification-settings',
-        { token }
+        { token },
     );
 }
 
@@ -739,7 +751,7 @@ export async function updateAdminNotificationSettings(
             | 'enableTimetableNotifications'
             | 'enableAccessRequestNotifications'
         >
-    >
+    >,
 ): Promise<{ settings: AdminNotificationSettings; success: boolean }> {
     return api<{ settings: AdminNotificationSettings; success: boolean }>(
         '/api/admin/notification-settings',
@@ -747,7 +759,7 @@ export async function updateAdminNotificationSettings(
             method: 'PUT',
             token,
             body: JSON.stringify(settings),
-        }
+        },
     );
 }
 
@@ -854,7 +866,7 @@ export interface UserInsightSummary {
 export async function trackActivity(
     token: string,
     action: string,
-    details?: Record<string, unknown>
+    details?: Record<string, unknown>,
 ): Promise<{ success: boolean }> {
     return api<{ success: boolean }>('/api/analytics/track', {
         method: 'POST',
@@ -864,7 +876,7 @@ export async function trackActivity(
 }
 
 export async function getDashboardStats(
-    token: string
+    token: string,
 ): Promise<{ stats: DashboardStats }> {
     return api<{ stats: DashboardStats }>('/api/analytics/dashboard', {
         token,
@@ -872,44 +884,44 @@ export async function getDashboardStats(
 }
 
 export async function getUserEngagementMetrics(
-    token: string
+    token: string,
 ): Promise<{ metrics: UserEngagementMetrics }> {
     return api<{ metrics: UserEngagementMetrics }>(
         '/api/analytics/engagement',
-        { token }
+        { token },
     );
 }
 
 export async function getActivityTrends(
-    token: string
+    token: string,
 ): Promise<{ trends: ActivityTrends }> {
     return api<{ trends: ActivityTrends }>('/api/analytics/trends', { token });
 }
 
 export async function getAnalyticsOverview(
-    token: string
+    token: string,
 ): Promise<AnalyticsOverview> {
     return api<AnalyticsOverview>('/api/analytics/overview', { token });
 }
 
 export async function getAnalyticsDetails(
     token: string,
-    metric: AnalyticsDetailMetric
+    metric: AnalyticsDetailMetric,
 ): Promise<{ details: AnalyticsDetailsResponse }> {
     const params = new URLSearchParams({ metric });
     return api<{ details: AnalyticsDetailsResponse }>(
         `/api/analytics/details?${params.toString()}`,
-        { token }
+        { token },
     );
 }
 
 export async function getUserInsight(
     token: string,
-    userId: string
+    userId: string,
 ): Promise<{ insight: UserInsightSummary }> {
     return api<{ insight: UserInsightSummary }>(
         `/api/analytics/user/${encodeURIComponent(userId)}`,
-        { token }
+        { token },
     );
 }
 
@@ -922,14 +934,14 @@ export type UserPreferences = {
 };
 
 export async function getUserPreferences(
-    token: string
+    token: string,
 ): Promise<UserPreferences> {
     return api<UserPreferences>('/api/users/preferences', { token });
 }
 
 export async function updateUserPreferences(
     token: string,
-    prefs: Partial<UserPreferences>
+    prefs: Partial<UserPreferences>,
 ): Promise<{ success: boolean } & Partial<UserPreferences>> {
     return api<{ success: boolean } & Partial<UserPreferences>>(
         '/api/users/preferences',
@@ -937,7 +949,7 @@ export async function updateUserPreferences(
             method: 'PUT',
             token,
             body: JSON.stringify(prefs),
-        }
+        },
     );
 }
 
@@ -949,7 +961,7 @@ export type ClassInfo = {
 };
 
 export async function getUserClasses(
-    token: string
+    token: string,
 ): Promise<{ classes: ClassInfo[] }> {
     return api<{ classes: ClassInfo[] }>('/api/timetable/classes', { token });
 }
@@ -958,7 +970,7 @@ export async function getClassTimetable(
     token: string,
     classId: number,
     start?: string,
-    end?: string
+    end?: string,
 ): Promise<TimetableResponse> {
     const params = new URLSearchParams();
     if (start) params.append('start', start);
@@ -970,17 +982,17 @@ export async function getClassTimetable(
 
 export async function searchClasses(
     token: string,
-    query: string
+    query: string,
 ): Promise<{ classes: ClassInfo[] }> {
     return api<{ classes: ClassInfo[] }>(
         `/api/timetable/classes/search?q=${encodeURIComponent(query)}`,
-        { token }
+        { token },
     );
 }
 
 export async function getAbsentLessons(
     token: string,
-    options?: { start?: string; end?: string; excuseStatusId?: number }
+    options?: { start?: string; end?: string; excuseStatusId?: number },
 ): Promise<AbsenceResponse> {
     const params = new URLSearchParams();
     if (options?.start) params.append('start', options.start);

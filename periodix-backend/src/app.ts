@@ -20,6 +20,7 @@ dotenv.config();
 const app = express();
 
 const corsOriginEnv = process.env.CORS_ORIGIN;
+const isProduction = process.env.NODE_ENV === 'production';
 // Basic security headers
 app.use(
     helmet({
@@ -46,6 +47,25 @@ function normalizeOrigin(input: string): string {
         .replace(/^['"]|['"]$/g, '') // strip wrapping quotes
         .replace(/\/$/, '') // drop single trailing slash
         .toLowerCase();
+}
+
+if (isProduction) {
+    if (!corsOriginEnv?.trim()) {
+        throw new Error(
+            'CORS_ORIGIN must be explicitly configured in production',
+        );
+    }
+
+    const hasWildcard = corsOriginEnv
+        .split(/[\s,]+/)
+        .map((entry) => normalizeOrigin(entry))
+        .some((entry) => entry === '*');
+
+    if (hasWildcard) {
+        throw new Error(
+            'CORS_ORIGIN wildcard (*) is not allowed in production',
+        );
+    }
 }
 
 interface OriginRule {

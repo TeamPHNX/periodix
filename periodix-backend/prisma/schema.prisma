@@ -21,6 +21,7 @@ model User {
   sduiSchoolLink            String?
   displayName               String?
   sharingEnabled            Boolean                    @default(true)
+  shareSearchVisible        Boolean                    @default(true)
   isUserManager             Boolean                    @default(false)
   timezone                  String                     @default("Europe/Berlin")
   hiddenSubjects            Json?

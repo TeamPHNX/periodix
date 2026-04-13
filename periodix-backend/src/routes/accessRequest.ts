@@ -7,6 +7,12 @@ import { notificationService } from '../services/notificationService.js';
 
 const router = Router();
 
+const GENERIC_ACCESS_REQUEST_RESPONSE = {
+    success: true,
+    message:
+        'If this account is eligible, an access request has been submitted.',
+};
+
 // Rate limit for access requests to prevent spam
 const accessRequestLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
@@ -47,9 +53,7 @@ router.post('/', accessRequestLimiter, async (req, res) => {
         });
 
         if (existingRule) {
-            return res
-                .status(400)
-                .json({ error: 'User is already authorized' });
+            return res.json(GENERIC_ACCESS_REQUEST_RESPONSE);
         }
 
         // Check if request already exists
@@ -58,35 +62,7 @@ router.post('/', accessRequestLimiter, async (req, res) => {
         });
 
         if (existingRequest) {
-            // Instead of silently rejecting, send a reminder notification to user managers.
-            // We keep the 400 response so existing frontend logic (showing a pending modal) still works.
-            try {
-                const now = new Date();
-                // Short human readable tag to differentiate messages and avoid legacy dedupe (title+message match)
-                const hh = String(now.getHours()).padStart(2, '0');
-                const mm = String(now.getMinutes()).padStart(2, '0');
-                const reminderSuffix = `(reminder ${now.getFullYear()}-${String(
-                    now.getMonth() + 1
-                ).padStart(2, '0')}-${String(now.getDate()).padStart(
-                    2,
-                    '0'
-                )} ${hh}:${mm})`;
-                const enrichedMessage = message
-                    ? `${message} ${reminderSuffix}`
-                    : reminderSuffix;
-                await notificationService.notifyAccessRequest(
-                    normalizedUsername,
-                    enrichedMessage
-                );
-            } catch (notifyErr) {
-                console.warn(
-                    'Failed to send reminder access request notification:',
-                    (notifyErr as any)?.message || notifyErr
-                );
-            }
-            return res
-                .status(400)
-                .json({ error: 'Access request already exists' });
+            return res.json(GENERIC_ACCESS_REQUEST_RESPONSE);
         }
 
         // Create the access request
@@ -106,13 +82,12 @@ router.post('/', accessRequestLimiter, async (req, res) => {
         // Notify user managers about the new access request
         await notificationService.notifyAccessRequest(
             normalizedUsername,
-            message
+            message,
         );
 
-        res.json({ request, success: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to create access request';
-        res.status(400).json({ error: msg });
+        res.json({ ...GENERIC_ACCESS_REQUEST_RESPONSE, request });
+    } catch {
+        res.status(500).json({ error: 'Failed to create access request' });
     }
 });
 
