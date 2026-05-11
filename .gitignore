@@ -15,3 +15,6 @@ periodix-backend/src/scripts/extractExams.ts
 example_exams.json
 
 generated
+periodix-backend/fetch_timetable.ts
+periodix-backend/timetable.json
+periodix-frontend/src/utils/timetable/lessonMerging.test.ts

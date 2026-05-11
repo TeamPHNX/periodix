@@ -60,6 +60,14 @@ function getLessonMergeKey(lesson: Lesson): string {
     return `${lesson.date}|base:${signature.base}`;
 }
 
+export function isLessonIrregular(lesson: Lesson): boolean {
+    return (
+        lesson.code === 'irregular' ||
+        !!lesson.te?.some((t: any) => t.orgname !== undefined) ||
+        !!lesson.ro?.some((r: any) => r.orgname !== undefined)
+    );
+}
+
 /**
  * Check if two lessons can be merged based on matching criteria
  * and break time between them (5 minutes or less)
@@ -73,6 +81,11 @@ export function canMergeLessons(lesson1: Lesson, lesson2: Lesson): boolean {
     const code1 = lesson1.code || '';
     const code2 = lesson2.code || '';
     if (code1 !== code2) return false;
+
+    // Never merge a normal lesson with an irregular lesson
+    const isIrregular1 = isLessonIrregular(lesson1);
+    const isIrregular2 = isLessonIrregular(lesson2);
+    if (isIrregular1 !== isIrregular2) return false;
 
     const sig1 = deriveLessonSignature(lesson1);
     const sig2 = deriveLessonSignature(lesson2);
