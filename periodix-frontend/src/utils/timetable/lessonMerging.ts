@@ -134,14 +134,14 @@ export function areExamsIdentical(exam1: Exam, exam2: Exam): boolean {
  */
 export function deduplicateHomework(
     homework1: Homework[] = [],
-    homework2: Homework[] = []
+    homework2: Homework[] = [],
 ): Homework[] {
     const allHomework = [...homework1, ...homework2];
     const deduplicated: Homework[] = [];
 
     for (const hw of allHomework) {
         const existingIndex = deduplicated.findIndex((existing) =>
-            areHomeworkIdentical(existing, hw)
+            areHomeworkIdentical(existing, hw),
         );
 
         if (existingIndex === -1) {
@@ -165,14 +165,14 @@ export function deduplicateHomework(
  */
 export function deduplicateExams(
     exams1: Exam[] = [],
-    exams2: Exam[] = []
+    exams2: Exam[] = [],
 ): Exam[] {
     const allExams = [...exams1, ...exams2];
     const deduplicated: Exam[] = [];
 
     for (const exam of allExams) {
         const existingIndex = deduplicated.findIndex((existing) =>
-            areExamsIdentical(existing, exam)
+            areExamsIdentical(existing, exam),
         );
 
         if (existingIndex === -1) {
