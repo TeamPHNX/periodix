@@ -1,5 +1,5 @@
 # Build stage
-FROM node:20-bookworm-slim AS build
+FROM node:25-bookworm-slim AS build
 WORKDIR /app
 
 # Install OS deps
@@ -31,7 +31,7 @@ ENV JWT_SECRET=${JWT_SECRET}
 RUN DATABASE_URL="postgresql://postgres:postgres@localhost:5432/periodix" npx prisma generate && npm run build
 
 # Runtime stage
-FROM node:20-bookworm-slim AS runtime
+FROM node:25-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PRISMA_GENERATE_SKIP_AUTOINSTALL=1 \
