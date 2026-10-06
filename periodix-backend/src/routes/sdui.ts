@@ -216,6 +216,12 @@ async function authenticateSduiForUser(user: SduiUserRecord): Promise<{
             );
         }
 
+        // Keep the library's reason in the server log; the client gets a generic error
+        console.warn('[sdui] authentication failed', {
+            userId: user.id,
+            schoolSlink,
+            reason: msg,
+        });
         throw new SduiRouteError(401, 'SDUI Authentication failed');
     }
 
