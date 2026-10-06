@@ -3,6 +3,7 @@ import { useState, useLayoutEffect, useRef, useEffect, useMemo } from 'react';
 import AdaptiveLessonContent from './AdaptiveLessonContent';
 import EllipsisIcon from './EllipsisIcon';
 import type { Lesson, LessonColors, Holiday } from '../types';
+import { getHolidayForDate } from '../utils/holidaySpans';
 import { fmtHM, untisToMinutes } from '../utils/dates';
 import { clamp } from '../utils/dates';
 import {
@@ -452,24 +453,7 @@ const DayColumn: FC<DayColumnProps> = ({
         });
     }
 
-    const holiday = holidays.find((h) => {
-        // Parse yyyymmdd number to Date
-        const parseUntisDate = (n: number) => {
-            const s = String(n);
-            const y = Number(s.slice(0, 4));
-            const mo = Number(s.slice(4, 6));
-            const d = Number(s.slice(6, 8));
-            return new Date(y, mo - 1, d);
-        };
-
-        const start = parseUntisDate(h.startDate);
-        const end = parseUntisDate(h.endDate);
-        start.setHours(0, 0, 0, 0);
-        end.setHours(0, 0, 0, 0);
-        const current = new Date(day);
-        current.setHours(0, 0, 0, 0);
-        return current >= start && current <= end;
-    });
+    const holiday = getHolidayForDate(holidays, day);
 
     const isSingleDayHoliday = holiday && holiday.startDate === holiday.endDate;
 

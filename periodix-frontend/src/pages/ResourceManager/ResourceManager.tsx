@@ -138,9 +138,13 @@ export default function ResourceManager({
         }
     }, [token, weekKey]);
 
+    // Only clear the view when the week changes, not when the token is refreshed
+    useEffect(() => {
+        setIndex(null);
+    }, [weekKey]);
+
     useEffect(() => {
         if (!allowed) return;
-        setIndex(null);
         void loadIndex();
     }, [allowed, loadIndex]);
 

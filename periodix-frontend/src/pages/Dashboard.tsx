@@ -91,6 +91,8 @@ type FallbackNoticeState = {
 
 const CLASS_TIMETABLE_CACHE_TTL_MS = 60 * 1000;
 
+const FOCUS_REFRESH_MIN_INTERVAL_MS = 60_000;
+
 export default function Dashboard({
     token,
     user,
@@ -705,11 +707,22 @@ export default function Dashboard({
         }
     }, [loadClass, loadUser, loadMine, selectedClass, selectedUser, user.id]);
 
-    // Visibility and Online listeners to trigger natural refreshes
+    // Visibility and Online listeners to trigger natural refreshes.
+    // Throttled: with focus-follows-mouse window managers, merely moving the
+    // pointer over the window fires 'focus' over and over.
+    const lastFocusRefreshRef = useRef(0);
     useEffect(() => {
-        const handleRefresh = () => {
+        const handleRefresh = (event: Event) => {
+            const now = Date.now();
+            if (
+                event.type !== 'online' &&
+                now - lastFocusRefreshRef.current < FOCUS_REFRESH_MIN_INTERVAL_MS
+            ) {
+                return;
+            }
             // Only refresh if the page is visible and we are online
             if (document.visibilityState === 'visible' && navigator.onLine) {
+                lastFocusRefreshRef.current = now;
                 if (selectedClass) {
                     loadClass(selectedClass.id);
                 } else if (selectedUser && selectedUser.id !== user.id) {
