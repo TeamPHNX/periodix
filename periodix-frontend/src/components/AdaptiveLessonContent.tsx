@@ -52,6 +52,9 @@ export interface AdaptiveLessonContentProps {
     onDecision?: (decision: LayoutDecision) => void;
 }
 
+// One line of lesson text (13px semibold, leading-tight) measures ~17px
+const SINGLE_LINE_MAX_HEIGHT_PX = 22;
+
 const AdaptiveLessonContent: FC<AdaptiveLessonContentProps> = memo(
     ({
         availableHeight,
@@ -172,8 +175,13 @@ const AdaptiveLessonContent: FC<AdaptiveLessonContentProps> = memo(
                         const scaleH = effectiveHeight / contentHeight;
                         const scaleW = availableWidth / contentWidth;
 
+                        // "Single-line" layouts only get the relaxed height rule while
+                        // they really render as one line. In narrow blocks inlineAll
+                        // wraps to two lines and was accepted anyway, spilling out of
+                        // short blocks although a true one-liner (inlineRoom) fit.
                         const isSingleLineLayout =
-                            level === 4 || level === 5 || level === 6;
+                            (level === 4 || level === 5 || level === 6) &&
+                            contentHeight <= SINGLE_LINE_MAX_HEIGHT_PX;
 
                         let requiredScale: number;
                         if (isSingleLineLayout) {

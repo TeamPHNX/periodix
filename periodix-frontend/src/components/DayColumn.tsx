@@ -163,6 +163,31 @@ const DayColumn: FC<DayColumnProps> = ({
         }
     }, []);
 
+    // Which lesson layout the CSS shows: the desktop block layout uses Tailwind's
+    // `sm:` (>=640px), while `isMobile` extends to 850px. Content decisions for the
+    // desktop layout must follow the CSS breakpoint, otherwise 640-850px rendered
+    // the desktop layout with mobile rules (room dropped, wrong paddings).
+    const [isSmUp, setIsSmUp] = useState<boolean>(() => {
+        if (typeof window === 'undefined') return true;
+        try {
+            return window.matchMedia(SM_MEDIA_QUERY).matches;
+        } catch {
+            return true;
+        }
+    });
+    useLayoutEffect(() => {
+        try {
+            const mq = window.matchMedia(SM_MEDIA_QUERY);
+            const update = (e: MediaQueryListEvent | MediaQueryList) =>
+                setIsSmUp('matches' in e ? e.matches : mq.matches);
+            update(mq);
+            mq.addEventListener('change', update);
+            return () => mq.removeEventListener('change', update);
+        } catch {
+            return;
+        }
+    }, []);
+
     // Collapse-overlap state for narrow columns even when not considered "mobile"
     // Use hysteresis so layout doesn't flicker near the boundary.
     // Collapse when narrower than ENTER, expand back to side-by-side when wider than EXIT.
@@ -931,7 +956,7 @@ const DayColumn: FC<DayColumnProps> = ({
                     }
                     // Extra right padding for indicators/icons on desktop
                     const roomPadRightPx =
-                        !isMobile && room ? (isClassTimetable ? 20 : 24) : 0;
+                        isSmUp && room ? (isClassTimetable ? 20 : 24) : 0;
                     // Allow a more compact mobile layout: lower height threshold for previews
                     // Previously used to decide rendering of inline info previews; now removed.
                     // const MIN_PREVIEW_HEIGHT = isMobile ? 44 : 56;
@@ -971,7 +996,7 @@ const DayColumn: FC<DayColumnProps> = ({
                     // For side-by-side lessons, avoid reserving right padding so content can fully use the width
                     const sideByySideAdjustment =
                         b.colCount > 1 ? 0 : roomPadRightPx;
-                    const contentPadRight = isMobile
+                    const contentPadRight = !isSmUp
                         ? 0 // mobile keeps centered layout
                         : sideByySideAdjustment + 4; // reduced padding for side-by-side lessons
                     const contentPadLeft = 0;
@@ -979,8 +1004,13 @@ const DayColumn: FC<DayColumnProps> = ({
                     // Calculate actual content dimensions for AdaptiveLessonContent
                     // Lesson width = effectiveWidth * (widthPct / 100) - horizontal padding (p-2.5 sm:p-3 = ~12px each side)
                     const lessonWidthPx = effectiveWidth * (widthPct / 100);
-                    // Use tighter padding only when truly cramped; day view side-by-side gets normal padding
-                    const horizontalPadding = isCrampedSideBySide ? 12 : 24;
+                    // Must match the block's CSS: px-2.5/sm:px-3 on both sides, pt + pb
+                    // (pb-1 for cancelled/irregular) and their 3px border on each side.
+                    // The previous fixed guesses (16px / 4px when cramped) overestimated
+                    // the space, so the chosen layout got clipped at the bottom.
+                    const borderPx = cancelled || irregular ? 6 : 0;
+                    const padUnitPx = isSmUp ? 12 : 10;
+                    const horizontalPadding = 2 * padUnitPx + borderPx;
                     const contentWidthPx = Math.max(
                         0,
                         lessonWidthPx -
@@ -989,8 +1019,8 @@ const DayColumn: FC<DayColumnProps> = ({
                             contentPadLeft,
                     );
                     // Content height = heightPx - vertical padding - reservedBottomPx
-                    // Use tighter vertical padding only when truly cramped
-                    const verticalPadding = isCrampedSideBySide ? 4 : 16;
+                    const verticalPadding =
+                        padUnitPx + (cancelled || irregular ? 4 : padUnitPx) + borderPx;
                     const contentHeightPx = Math.max(
                         0,
                         heightPx - verticalPadding - reservedBottomPx,
@@ -1099,7 +1129,7 @@ const DayColumn: FC<DayColumnProps> = ({
 
                     const showClassCondensedMeta =
                         isClassTimetable &&
-                        !isMobile &&
+                        isSmUp &&
                         availableSpace < 44 && // Show condensed time when space is tight (same as old MIN_TIME_DISPLAY_HEIGHT for class)
                         availableSpace > 14;
 
@@ -1108,7 +1138,7 @@ const DayColumn: FC<DayColumnProps> = ({
                         : null;
 
                     const inlineRoomBlock =
-                        !isMobile && room ? (
+                        isSmUp && room ? (
                             <div
                                 className={`text-[11px] leading-tight mt-0.5 ${
                                     cancelled
@@ -2018,12 +2048,16 @@ export default DayColumn;
 //  - wrap when (available + WRAP_ENTER_SLACK) < intrinsic (i.e. we are short by more than slack)
 //  - unwrap when (available - WRAP_EXIT_SLACK) > intrinsic (i.e. we have comfortable surplus)
 //  - add stronger column width based force wrap/unwrap thresholds
+const SM_MEDIA_QUERY = '(min-width: 640px)'; // Tailwind `sm`
 const MIN_FALLBACK_INLINE_WIDTH = 120; // Conservative estimate if measurement fails
 const WRAP_ENTER_SLACK = 2; // Smaller slack => wraps sooner when tight
 const WRAP_EXIT_SLACK = 8; // Larger surplus required to unwrap to avoid oscillation
 // Additional column-based heuristic: even if intrinsic fits, force vertical when the whole column is narrow
-const FORCE_WRAP_COLUMN_WIDTH = 180; // px - below this force vertical layout
-const FORCE_UNWRAP_COLUMN_WIDTH = 190; // px - need to exceed this to allow reverting to single line
+// Below this lesson width the time is always hidden; above it the measured
+// fit decides (it used to be 180px, which hid the time in mid-size windows
+// even when "07:40–09:13" fit with room to spare).
+const FORCE_WRAP_COLUMN_WIDTH = 110; // px
+const FORCE_UNWRAP_COLUMN_WIDTH = 120; // px
 // Debounce delay to prevent flickering during scroll
 const WRAP_STATE_DEBOUNCE_MS = 150;
 
