@@ -57,7 +57,7 @@ declare global {
 }
 
 export default function Timetable({
-    data,
+    data: rawData,
     holidays = [],
     weekStart,
     lessonColors = {},
@@ -73,6 +73,7 @@ export default function Timetable({
     isOnboardingActive,
     isRateLimited,
     isClassView = false,
+    resourceView,
 }: {
     data: TimetableResponse | null;
     holidays?: Holiday[];
@@ -96,10 +97,46 @@ export default function Timetable({
     isOnboardingActive?: boolean;
     isRateLimited?: boolean;
     isClassView?: boolean;
+    // Teacher / room overview: lesson blocks show the classes instead of the
+    // teacher (teacher view) or room (room view), which is already known
+    resourceView?: 'teacher' | 'room';
     // Extended: allow passing current offset when color set
     // (so initial color creation can persist chosen offset)
     // Keeping backwards compatibility (third param optional)
 }) {
+    const resourceOriginals = useMemo(() => {
+        const map = new Map<number, Lesson>();
+        if (resourceView && Array.isArray(rawData?.payload)) {
+            for (const l of rawData.payload as Lesson[]) map.set(l.id, l);
+        }
+        return map;
+    }, [rawData?.payload, resourceView]);
+    const data = useMemo<TimetableResponse | null>(() => {
+        if (!resourceView || !rawData || !Array.isArray(rawData.payload)) {
+            return rawData;
+        }
+        return {
+            ...rawData,
+            payload: (rawData.payload as Lesson[]).map((l) => {
+                const classes = (l.kl ?? []).map((k) => ({
+                    id: k.id,
+                    name: k.name,
+                    longname: k.longname,
+                }));
+                return resourceView === 'teacher'
+                    ? { ...l, te: classes }
+                    : { ...l, ro: classes };
+            }),
+        };
+    }, [rawData, resourceView]);
+    // The modal should show the real teacher / room again
+    const withOriginalPeople = (lesson: Lesson): Lesson => {
+        const original = resourceOriginals.get(lesson.id);
+        return original
+            ? { ...lesson, te: original.te, ro: original.ro }
+            : lesson;
+    };
+
     const START_MIN = 7 * 60 + 40; // 07:40
     const END_MIN = 17 * 60 + 15; // 17:15
     const totalMinutes = END_MIN - START_MIN;
@@ -327,7 +364,7 @@ export default function Timetable({
     }, []);
 
     const handleLessonClick = (lesson: Lesson) => {
-        setSelectedLesson(lesson);
+        setSelectedLesson(withOriginalPeople(lesson));
         // Build overlapping group for the clicked lesson within its day
         try {
             const dayIso = yyyymmddToISO(lesson.date);
@@ -343,7 +380,9 @@ export default function Timetable({
                 (a, b) => a.startTime - b.startTime || a.endTime - b.endTime,
             );
             const idx = overlaps.findIndex((l) => l.id === lesson.id);
-            setSelectedGroup(overlaps.length > 1 ? overlaps : null);
+            setSelectedGroup(
+                overlaps.length > 1 ? overlaps.map(withOriginalPeople) : null,
+            );
             setSelectedIndexInGroup(idx >= 0 ? idx : 0);
         } catch {
             setSelectedGroup(null);
@@ -2698,6 +2737,7 @@ export default function Timetable({
                 gradientOffsets={gradientOffsets}
                 onGradientOffsetChange={updateGradientOffset}
                 isOnboardingActive={isOnboardingActive}
+                showClasses={!!resourceView}
             />
             <HolidayModal
                 holiday={selectedHoliday}

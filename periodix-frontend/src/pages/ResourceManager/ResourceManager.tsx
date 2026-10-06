@@ -1,194 +1,404 @@
-import { useEffect, useState, useMemo } from 'react';
-import type { User, AggregatedResourcesResponse, TeacherResource, RoomResource, ResourceLesson } from '../../types';
-import { getAggregatedResources } from '../../api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type {
+    FreeRoomsResponse,
+    Holiday,
+    LessonColors,
+    ResourceIndexResponse,
+    ResourceType,
+    TimetableResponse,
+    User,
+} from '../../types';
+import {
+    getFreeRooms,
+    getResourceIndex,
+    getResourceRefreshStatus,
+    getResourceTimetable,
+    refreshResources,
+} from '../../api';
+import Timetable from '../../components/Timetable';
 import Spinner from '../../components/Spinner';
+import { addDays, fmtLocal } from '../../utils/dates';
+import ResourcePicker from './ResourcePicker';
+import CoverageBar from './CoverageBar';
+import FreeRoomsGrid from './FreeRoomsGrid';
+
+type Tab = ResourceType | 'free';
+
+const TABS: Array<{ id: Tab; label: string }> = [
+    { id: 'teacher', label: 'Teachers' },
+    { id: 'room', label: 'Rooms' },
+    { id: 'free', label: 'Free rooms' },
+];
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
+const STORAGE_KEY = 'periodix:resources';
+const POLL_MS = 2500;
+const MAX_RECENTS = 6;
+
+type StoredPrefs = {
+    tab: Tab;
+    selected: Record<ResourceType, number | null>;
+    recents: Record<ResourceType, number[]>;
+};
+
+const DEFAULT_PREFS: StoredPrefs = {
+    tab: 'teacher',
+    selected: { teacher: null, room: null },
+    recents: { teacher: [], room: [] },
+};
+
+function loadPrefs(): StoredPrefs {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return DEFAULT_PREFS;
+        const parsed = JSON.parse(raw);
+        return {
+            tab: TABS.some((t) => t.id === parsed?.tab) ? parsed.tab : 'teacher',
+            selected: { ...DEFAULT_PREFS.selected, ...(parsed?.selected ?? {}) },
+            recents: { ...DEFAULT_PREFS.recents, ...(parsed?.recents ?? {}) },
+        };
+    } catch {
+        return DEFAULT_PREFS;
+    }
+}
+
+function errorMessage(err: unknown): string {
+    const raw = err instanceof Error ? err.message : String(err);
+    try {
+        return JSON.parse(raw)?.error || raw;
+    } catch {
+        return raw;
+    }
+}
 
 interface ResourceManagerProps {
     token: string;
     user: User;
+    weekStart: Date;
+    holidays?: Holiday[];
+    lessonColors?: LessonColors;
+    defaultLessonColors?: LessonColors;
+    onWeekNavigate?: (direction: 'prev' | 'next') => void;
 }
 
-type ViewMode = 'teachers' | 'rooms';
+export default function ResourceManager({
+    token,
+    user,
+    weekStart,
+    holidays,
+    lessonColors,
+    defaultLessonColors,
+    onWeekNavigate,
+}: ResourceManagerProps) {
+    const allowed = !!(user.isUserManager || user.isAdmin);
+    const weekKey = fmtLocal(weekStart);
 
-export default function ResourceManager({ token, user }: ResourceManagerProps) {
-    const [loading, setLoading] = useState(true);
-    const [data, setData] = useState<AggregatedResourcesResponse | null>(null);
-    const [error, setError] = useState<string | null>(null);
-    const [mode, setMode] = useState<ViewMode>('teachers');
-    const [search, setSearch] = useState('');
-    const [selectedTeacher, setSelectedTeacher] = useState<TeacherResource | null>(null);
-    const [selectedRoom, setSelectedRoom] = useState<RoomResource | null>(null);
+    const [prefs, setPrefs] = useState<StoredPrefs>(loadPrefs);
+    const [index, setIndex] = useState<ResourceIndexResponse | null>(null);
+    const [indexError, setIndexError] = useState<string | null>(null);
+    const [refreshing, setRefreshing] = useState(false);
+    // Bumped after a refresh job finishes so open views refetch
+    const [dataVersion, setDataVersion] = useState(0);
+
+    const [timetable, setTimetable] = useState<TimetableResponse | null>(null);
+    const [timetableError, setTimetableError] = useState<string | null>(null);
+
+    const todayOffset = useMemo(() => {
+        const diff = Math.floor(
+            (new Date().setHours(0, 0, 0, 0) - new Date(weekStart).setHours(0, 0, 0, 0)) /
+                86_400_000,
+        );
+        return diff >= 0 && diff <= 4 ? diff : 0;
+    }, [weekStart]);
+    const [freeDay, setFreeDay] = useState(todayOffset);
+    const [freeRooms, setFreeRooms] = useState<FreeRoomsResponse | null>(null);
+    const [freeRoomsError, setFreeRoomsError] = useState<string | null>(null);
+
+    useEffect(() => setFreeDay(todayOffset), [todayOffset]);
 
     useEffect(() => {
-        if (!user.isUserManager && !user.isAdmin) {
-            setError("Access Restricted: You do not have permission to view this page.");
-            setLoading(false);
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+        } catch {
+            /* storage unavailable: preferences just won't persist */
+        }
+    }, [prefs]);
+
+    const tab = prefs.tab;
+    const resourceType: ResourceType | null = tab === 'free' ? null : tab;
+    const selectedId = resourceType ? prefs.selected[resourceType] : null;
+
+    // --- Week index (lists + coverage); opening a stale week starts a refresh on the server
+    const loadIndex = useCallback(async () => {
+        try {
+            const res = await getResourceIndex(token, weekKey);
+            setIndex(res);
+            setIndexError(null);
+        } catch (err) {
+            setIndexError(errorMessage(err));
+        }
+    }, [token, weekKey]);
+
+    useEffect(() => {
+        if (!allowed) return;
+        setIndex(null);
+        void loadIndex();
+    }, [allowed, loadIndex]);
+
+    // --- Poll a running refresh job, then reload everything once it is done
+    const jobRunning = index?.job?.state === 'running';
+    const lastCompletedRef = useRef(0);
+    useEffect(() => {
+        if (!jobRunning) return;
+        lastCompletedRef.current = 0;
+        let cancelled = false;
+        const timer = window.setInterval(async () => {
+            try {
+                const { job } = await getResourceRefreshStatus(token, weekKey);
+                if (cancelled) return;
+                if (!job || job.state === 'done') {
+                    await loadIndex();
+                    setDataVersion((v) => v + 1);
+                    return;
+                }
+                setIndex((prev) => (prev ? { ...prev, job } : prev));
+                // Show partial results every few classes so the page fills in progressively
+                if (job.completed - lastCompletedRef.current >= 8) {
+                    lastCompletedRef.current = job.completed;
+                    await loadIndex();
+                    setDataVersion((v) => v + 1);
+                }
+            } catch {
+                /* transient; try again next tick */
+            }
+        }, POLL_MS);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [jobRunning, token, weekKey, loadIndex]);
+
+    const handleRefresh = async () => {
+        setRefreshing(true);
+        try {
+            const { job } = await refreshResources(token, weekKey);
+            setIndex((prev) => (prev ? { ...prev, job } : prev));
+        } catch (err) {
+            setIndexError(errorMessage(err));
+        } finally {
+            setRefreshing(false);
+        }
+    };
+
+    // --- Teacher / room timetable
+    useEffect(() => {
+        if (!allowed || !resourceType || selectedId === null) {
+            setTimetable(null);
             return;
         }
+        let cancelled = false;
+        getResourceTimetable(token, resourceType, selectedId, weekKey)
+            .then((res) => {
+                if (cancelled) return;
+                setTimetable(res);
+                setTimetableError(null);
+            })
+            .catch((err) => {
+                if (!cancelled) setTimetableError(errorMessage(err));
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [allowed, token, resourceType, selectedId, weekKey, dataVersion]);
 
-        getAggregatedResources(token)
-            .then(setData)
-            .catch((err: any) => setError(err.message || 'Failed to load resources'))
-            .finally(() => setLoading(false));
-    }, [token, user]);
+    // --- Free rooms for one day of the week
+    const freeDate = fmtLocal(addDays(weekStart, freeDay));
+    useEffect(() => {
+        if (!allowed || tab !== 'free') return;
+        let cancelled = false;
+        getFreeRooms(token, freeDate)
+            .then((res) => {
+                if (cancelled) return;
+                setFreeRooms(res);
+                setFreeRoomsError(null);
+            })
+            .catch((err) => {
+                if (!cancelled) setFreeRoomsError(errorMessage(err));
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [allowed, token, tab, freeDate, dataVersion]);
 
-    const filteredTeachers = useMemo(() => {
-        if (!data) return [];
-        if (!search) return data.teachers;
-        const s = search.toLowerCase();
-        return data.teachers.filter((t: TeacherResource) => t.name.toLowerCase().includes(s) || t.id.toLowerCase().includes(s));
-    }, [data, search]);
+    const setTab = (next: Tab) => setPrefs((p) => ({ ...p, tab: next }));
 
-    const filteredRooms = useMemo(() => {
-        if (!data) return [];
-        if (!search) return data.rooms;
-        const s = search.toLowerCase();
-        return data.rooms.filter((r: RoomResource) => r.name.toLowerCase().includes(s) || r.id.toLowerCase().includes(s));
-    }, [data, search]);
+    const selectResource = (type: ResourceType, id: number) => {
+        if (prefs.selected[type] !== id) setTimetable(null);
+        setPrefs((p) => ({
+            ...p,
+            tab: type,
+            selected: { ...p.selected, [type]: id },
+            recents: {
+                ...p.recents,
+                [type]: [id, ...p.recents[type].filter((r) => r !== id)].slice(0, MAX_RECENTS),
+            },
+        }));
+    };
 
-    if(loading) return <div className="flex justify-center p-8"><Spinner /></div>;
-    if(error) return <div className="p-4 text-red-500 bg-red-100 rounded">{error}</div>;
-    if(!data) return null;
+    if (!allowed) {
+        return (
+            <div className="rounded-md border border-rose-300 bg-rose-50 p-3 text-rose-800 dark:border-rose-700 dark:bg-rose-900/40 dark:text-rose-200">
+                Only user managers can open the resource overview.
+            </div>
+        );
+    }
+
+    const resources = resourceType && index ? index[resourceType === 'teacher' ? 'teachers' : 'rooms'] : [];
+    const selectedSummary = resources.find((r) => r.id === selectedId);
 
     return (
-        <div className="p-4 max-w-7xl mx-auto dark:text-gray-100">
-            <h1 className="text-2xl font-bold mb-4">Resource Manager</h1>
-            
-            <div className="flex gap-4 mb-6 border-b dark:border-gray-700">
-                <button 
-                    onClick={() => { setMode('teachers'); setSelectedTeacher(null); setSelectedRoom(null); }}
-                    className={`px-4 py-2 border-b-2 ${mode === 'teachers' ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400' : 'border-transparent hover:text-gray-600 dark:hover:text-gray-300'}`}
+        <div className="space-y-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+                <div
+                    role="tablist"
+                    className="inline-flex shrink-0 self-start rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-700 dark:bg-slate-800"
                 >
-                    Teachers
-                </button>
-                <button 
-                    onClick={() => { setMode('rooms'); setSelectedTeacher(null); setSelectedRoom(null); }}
-                    className={`px-4 py-2 border-b-2 ${mode === 'rooms' ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400' : 'border-transparent hover:text-gray-600 dark:hover:text-gray-300'}`}
-                >
-                    Rooms
-                </button>
-            </div>
-
-            <div className="mb-4">
-                 <input
-                    type="text"
-                    placeholder={`Search ${mode}...`}
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    className="w-full md:w-1/3 px-3 py-2 border rounded dark:bg-gray-800 dark:border-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                />
-            </div>
-
-            {mode === 'teachers' && (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                     {filteredTeachers.map((teacher: TeacherResource) => (
-                         <div 
-                            key={teacher.id} 
-                            onClick={() => setSelectedTeacher(teacher)}
-                            className="p-4 border rounded cursor-pointer hover:bg-gray-50 dark:bg-gray-800 dark:border-gray-700 dark:hover:bg-gray-700 transition"
+                    {TABS.map((t) => (
+                        <button
+                            key={t.id}
+                            role="tab"
+                            aria-selected={tab === t.id}
+                            type="button"
+                            onClick={() => setTab(t.id)}
+                            className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                                tab === t.id
+                                    ? 'bg-white text-sky-700 shadow-sm dark:bg-slate-700 dark:text-sky-300'
+                                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+                            }`}
                         >
-                            <h3 className="font-semibold text-lg">{teacher.name}</h3>
-                            <p className="text-gray-500 text-sm">ID: {teacher.id}</p>
-                            <p className="text-gray-500 text-sm">{teacher.lessons.length} scheduled lessons</p>
-                         </div>
-                     ))}
+                            {t.label}
+                        </button>
+                    ))}
                 </div>
-            )}
 
-             {mode === 'rooms' && (
-                <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                        <thead className="bg-gray-50 dark:bg-gray-800">
-                            <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Room</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Usage</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody className="bg-white divide-y divide-gray-200 dark:bg-gray-900 dark:divide-gray-700">
-                            {filteredRooms.map((room: RoomResource) => (
-                                <tr key={room.id} onClick={() => setSelectedRoom(room)} className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800">
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">{room.name}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{room.lessons.length} lessons</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        {/* Simple current status logic could go here */}
-                                        Active
-                                    </td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            )}
+                {resourceType && index && (
+                    <ResourcePicker
+                        key={resourceType}
+                        type={resourceType}
+                        resources={resources}
+                        selectedId={selectedId}
+                        recentIds={prefs.recents[resourceType]}
+                        onSelect={(id) => selectResource(resourceType, id)}
+                    />
+                )}
 
-            {/* Modal or Details View could be better, for now just inline below or new screen section? 
-                User asked for "click on a teacher and see thier estimated day timetable" 
-            */}
-            
-            {selectedTeacher && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={() => setSelectedTeacher(null)}>
-                    <div className="bg-white dark:bg-gray-900 rounded-lg max-w-4xl w-full p-6 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-                        <div className="flex justify-between items-center mb-4">
-                            <h2 className="text-xl font-bold">{selectedTeacher.name} - Estimated Timetable</h2>
-                            <button onClick={() => setSelectedTeacher(null)} className="text-gray-500 hover:text-gray-700">&times;</button>
-                        </div>
-                        <LessonList lessons={selectedTeacher.lessons} />
+                {tab === 'free' && (
+                    <div className="inline-flex self-start rounded-lg border border-slate-200 p-0.5 dark:border-slate-700">
+                        {WEEKDAYS.map((label, i) => (
+                            <button
+                                key={label}
+                                type="button"
+                                onClick={() => setFreeDay(i)}
+                                className={`rounded-md px-2.5 py-1 text-sm ${
+                                    freeDay === i
+                                        ? 'bg-sky-600 text-white'
+                                        : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700'
+                                }`}
+                            >
+                                {label}
+                                <span className="ml-1 text-xs opacity-70">
+                                    {addDays(weekStart, i).getDate()}.
+                                </span>
+                            </button>
+                        ))}
                     </div>
+                )}
+            </div>
+
+            {indexError && (
+                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-200">
+                    {indexError}
                 </div>
             )}
 
-            {selectedRoom && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50" onClick={() => setSelectedRoom(null)}>
-                    <div className="bg-white dark:bg-gray-900 rounded-lg max-w-4xl w-full p-6 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-                        <div className="flex justify-between items-center mb-4">
-                            <h2 className="text-xl font-bold">{selectedRoom.name} - Occupancy</h2>
-                            <button onClick={() => setSelectedRoom(null)} className="text-gray-500 hover:text-gray-700">&times;</button>
-                        </div>
-                         <LessonList lessons={selectedRoom.lessons} showTeacher />
+            {index ? (
+                <CoverageBar index={index} refreshing={refreshing} onRefresh={handleRefresh} />
+            ) : (
+                !indexError && (
+                    <div className="flex justify-center p-8">
+                        <Spinner />
                     </div>
-                </div>
+                )
+            )}
+
+            {index && resourceType && (
+                <>
+                    {selectedId === null ? (
+                        <div className="rounded-lg border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500 dark:border-slate-600 dark:text-slate-400">
+                            {resources.length
+                                ? `Pick a ${resourceType === 'teacher' ? 'teacher' : 'room'} to see their week.`
+                                : jobRunning
+                                  ? 'Loading class timetables for this week…'
+                                  : 'No lessons known for this week yet.'}
+                        </div>
+                    ) : (
+                        <>
+                            {timetableError && (
+                                <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-200">
+                                    {timetableError}
+                                </div>
+                            )}
+                            {selectedSummary && (
+                                <div className="flex items-baseline gap-2 px-1">
+                                    <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                                        {selectedSummary.longName}
+                                    </h2>
+                                    {selectedSummary.longName !== selectedSummary.name && (
+                                        <span className="text-sm text-slate-500 dark:text-slate-400">
+                                            {selectedSummary.name}
+                                        </span>
+                                    )}
+                                    <span className="ml-auto text-xs text-slate-500 dark:text-slate-400">
+                                        {selectedSummary.lessonCount} lessons this week
+                                    </span>
+                                </div>
+                            )}
+                            <Timetable
+                                data={timetable}
+                                holidays={holidays}
+                                weekStart={weekStart}
+                                lessonColors={lessonColors}
+                                defaultLessonColors={defaultLessonColors}
+                                token={token}
+                                onWeekNavigate={onWeekNavigate}
+                                isClassView
+                                resourceView={resourceType}
+                            />
+                        </>
+                    )}
+                </>
+            )}
+
+            {index && tab === 'free' && (
+                <>
+                    {freeRoomsError && (
+                        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-200">
+                            {freeRoomsError}
+                        </div>
+                    )}
+                    {freeRooms ? (
+                        <FreeRoomsGrid
+                            data={freeRooms}
+                            onOpenRoom={(id) => selectResource('room', id)}
+                        />
+                    ) : (
+                        !freeRoomsError && (
+                            <div className="flex justify-center p-8">
+                                <Spinner />
+                            </div>
+                        )
+                    )}
+                </>
             )}
         </div>
     );
-}
-
-function LessonList({ lessons, showTeacher }: { lessons: ResourceLesson[], showTeacher?: boolean }) {
-    // Sort by date then time
-    const sorted = [...lessons].sort((a, b) => {
-        if (a.date !== b.date) return a.date - b.date;
-        return a.startTime - b.startTime;
-    });
-
-    if (sorted.length === 0) return <p className="text-gray-500">No lessons found.</p>;
-
-    return (
-        <div className="space-y-2">
-            {sorted.map((lesson, idx) => (
-                <div key={idx} className="p-3 bg-gray-50 dark:bg-gray-800 rounded border dark:border-gray-700 flex flex-col md:flex-row md:items-center gap-2">
-                    <div className="w-32 font-mono text-sm">
-                        {lesson.date} <br/>
-                        {formatUntisTime(lesson.startTime)} - {formatUntisTime(lesson.endTime)}
-                    </div>
-                    <div className="flex-1">
-                        <div className="font-medium text-indigo-600 dark:text-indigo-400">
-                            {lesson.subjects.join(', ')}
-                        </div>
-                        <div className="text-sm text-gray-600 dark:text-gray-300">
-                             {showTeacher && <span className="mr-2">👨‍🏫 {lesson.teachers.join(', ')}</span>}
-                             <span className="mr-2">🏫 {lesson.rooms.join(', ')}</span>
-                             <span>🎓 {lesson.classes.join(', ')}</span>
-                        </div>
-                        {lesson.code === 'cancelled' && <span className="text-red-500 text-xs font-bold uppercase">Cancelled</span>}
-                    </div>
-                </div>
-            ))}
-        </div>
-    );
-}
-
-function formatUntisTime(t: number): string {
-    const s = t.toString().padStart(3, '0'); // 740 -> 0740, 1200 -> 1200
-    const hours = s.slice(0, s.length - 2);
-    const mins = s.slice(s.length - 2);
-    return `${hours}:${mins}`;
 }

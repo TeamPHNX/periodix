@@ -138,7 +138,9 @@ export default function Dashboard({
     const isClassViewActive = !!(
         primaryClass && selectedClass?.id === primaryClass.id
     );
-    const isHomeViewActive = !selectedClass && !selectedUser;
+    const [isResourceManagerOpen, setIsResourceManagerOpen] = useState(false);
+    const isHomeViewActive =
+        !selectedClass && !selectedUser && !isResourceManagerOpen;
     const isSearchViewActive = !!selectedUser && selectedUser.id !== user.id;
 
     const abortRef = useRef<AbortController | null>(null);
@@ -259,7 +261,6 @@ export default function Dashboard({
     // Onboarding state
     const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
     const [isLessonModalOpen, setIsLessonModalOpen] = useState(false);
-    const [isResourceManagerOpen, setIsResourceManagerOpen] = useState(false);
 
     const loadAbsences = useCallback(
         async (rangeOverride?: DateRange) => {
@@ -1899,6 +1900,7 @@ export default function Dashboard({
                                     }`}
                                     title="My timetable"
                                     onClick={() => {
+                                        setIsResourceManagerOpen(false);
                                         setSelectedUser(null);
                                         setSelectedClass(null);
                                         setQueryText('');
@@ -2021,7 +2023,15 @@ export default function Dashboard({
 
                         {isResourceManagerOpen ? (
                              <Suspense fallback={<div className="p-8 flex justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>}>
-                                <ResourceManager token={token} user={user} />
+                                <ResourceManager
+                                    token={token}
+                                    user={user}
+                                    weekStart={weekStartDate}
+                                    holidays={holidays}
+                                    lessonColors={lessonColors}
+                                    defaultLessonColors={defaultLessonColors}
+                                    onWeekNavigate={handleWeekNavigate}
+                                />
                             </Suspense>
                         ) : (
                         <Timetable
