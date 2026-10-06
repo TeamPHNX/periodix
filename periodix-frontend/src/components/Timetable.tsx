@@ -414,7 +414,13 @@ export default function Timetable({
         return () => window.removeEventListener('resize', computeScale);
     }, [totalMinutes]);
 
-    const monday = startOfWeek(weekStart);
+    // Memoized by time value: a fresh Date each render made `days` and everything
+    // derived from it (lessonsByDay, ...) recompute on every render, even mid-swipe
+    const weekStartTime = weekStart.getTime();
+    const monday = useMemo(
+        () => startOfWeek(new Date(weekStartTime)),
+        [weekStartTime],
+    );
     const days = useMemo(
         () => Array.from({ length: 5 }, (_, i) => addDays(monday, i)),
         [monday],
@@ -529,6 +535,23 @@ export default function Timetable({
     useEffect(() => {
         focusedDayRef.current = focusedDay;
     }, [focusedDay]);
+    // Keep day view valid when the week changes from outside (e.g. "My timetable"
+    // jumps to the current week). A focused day outside the shown week left an
+    // empty header with no way back to the week view. Day swipes across weeks
+    // set their own target day, so skip while that animation runs.
+    useEffect(() => {
+        if (!focusedDay || isDayAnimatingRef.current) return;
+        const keys = days.map((d) => fmtLocal(d));
+        if (keys.includes(focusedDay)) return;
+        const todayKey = fmtLocal(new Date());
+        if (keys.includes(todayKey)) {
+            setFocusedDay(todayKey);
+            return;
+        }
+        const [y, m, d] = focusedDay.split('-').map(Number);
+        const weekdayIndex = (new Date(y, m - 1, d).getDay() + 6) % 7; // Mon=0
+        setFocusedDay(keys[Math.min(weekdayIndex, keys.length - 1)] ?? null);
+    }, [days, focusedDay]);
     useEffect(() => {
         weekStartRef.current = weekStart;
     }, [weekStart]);
@@ -2095,7 +2118,12 @@ export default function Timetable({
                                                     }
                                                     isDayView
                                                 />
-                                                {!items.length && (
+                                                {/* A holiday banner already explains an empty day */}
+                                                {!items.length &&
+                                                    !getHolidayForDate(
+                                                        holidays,
+                                                        dayObj,
+                                                    ) && (
                                                     <div className="absolute inset-0 flex items-center justify-center z-40">
                                                         <div className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-lg border border-dashed border-slate-300 dark:border-slate-600 p-6 text-center text-slate-600 dark:text-slate-300 shadow-lg">
                                                             No lessons for this
