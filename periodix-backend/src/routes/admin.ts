@@ -12,7 +12,12 @@ const updateUserSchema = z.object({
 // List users (basic fields only)
 router.get('/users', adminOnly, async (_req, res) => {
     const users = await (prisma as any).user.findMany({
-        select: { id: true, username: true, displayName: true, isUserManager: true },
+        select: {
+            id: true,
+            username: true,
+            displayName: true,
+            isUserManager: true,
+        },
         orderBy: { username: 'asc' },
     });
     res.json({ users });
@@ -27,9 +32,8 @@ router.delete('/users/:id', adminOnly, async (req, res) => {
         if (result.count === 0)
             return res.status(404).json({ error: 'User not found' });
         res.json({ ok: true, count: result.count });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to delete user';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to delete user' });
     }
 });
 
@@ -37,22 +41,26 @@ router.delete('/users/:id', adminOnly, async (req, res) => {
 router.patch('/users/:id', adminOnly, async (req, res) => {
     const id = req.params.id;
     if (!id) return res.status(400).json({ error: 'Missing id' });
-    
+
     const parsed = updateUserSchema.safeParse(req.body);
     if (!parsed.success) {
         return res.status(400).json({ error: parsed.error.flatten() });
     }
-    
+
     try {
         const user = await (prisma as any).user.update({
             where: { id },
             data: { displayName: parsed.data.displayName },
-            select: { id: true, username: true, displayName: true, isUserManager: true },
+            select: {
+                id: true,
+                username: true,
+                displayName: true,
+                isUserManager: true,
+            },
         });
         res.json({ user });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to update user';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to update user' });
     }
 });
 
@@ -60,17 +68,21 @@ router.patch('/users/:id', adminOnly, async (req, res) => {
 router.patch('/users/:id/grant-user-manager', adminOnly, async (req, res) => {
     const id = req.params.id;
     if (!id) return res.status(400).json({ error: 'Missing id' });
-    
+
     try {
         const user = await (prisma as any).user.update({
             where: { id },
             data: { isUserManager: true },
-            select: { id: true, username: true, displayName: true, isUserManager: true },
+            select: {
+                id: true,
+                username: true,
+                displayName: true,
+                isUserManager: true,
+            },
         });
         res.json({ user });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to grant user manager status';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to grant user manager status' });
     }
 });
 
@@ -78,17 +90,21 @@ router.patch('/users/:id/grant-user-manager', adminOnly, async (req, res) => {
 router.patch('/users/:id/revoke-user-manager', adminOnly, async (req, res) => {
     const id = req.params.id;
     if (!id) return res.status(400).json({ error: 'Missing id' });
-    
+
     try {
         const user = await (prisma as any).user.update({
             where: { id },
             data: { isUserManager: false },
-            select: { id: true, username: true, displayName: true, isUserManager: true },
+            select: {
+                id: true,
+                username: true,
+                displayName: true,
+                isUserManager: true,
+            },
         });
         res.json({ user });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to revoke user manager status';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to revoke user manager status' });
     }
 });
 
@@ -125,9 +141,8 @@ router.post('/whitelist', adminOnly, async (req, res) => {
             select: { id: true, value: true, createdAt: true },
         });
         res.json({ rule, created: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to create rule';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to create rule' });
     }
 });
 
@@ -136,13 +151,14 @@ router.delete('/whitelist/:id', adminOnly, async (req, res) => {
     const id = req.params.id;
     if (!id) return res.status(400).json({ error: 'Missing id' });
     try {
-        const result = await (prisma as any).whitelistRule.deleteMany({ where: { id } });
+        const result = await (prisma as any).whitelistRule.deleteMany({
+            where: { id },
+        });
         if (result.count === 0)
             return res.status(404).json({ error: 'Rule not found' });
         res.json({ ok: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to delete rule';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to delete rule' });
     }
 });
 
@@ -181,7 +197,10 @@ router.post('/access-requests/:id/accept', adminOnly, async (req, res) => {
         if (existingRule) {
             // Delete the request since user is already whitelisted
             await (prisma as any).accessRequest.deleteMany({ where: { id } });
-            return res.json({ success: true, message: 'User was already whitelisted' });
+            return res.json({
+                success: true,
+                message: 'User was already whitelisted',
+            });
         }
 
         // Add to whitelist and delete request in a transaction
@@ -193,9 +212,8 @@ router.post('/access-requests/:id/accept', adminOnly, async (req, res) => {
         });
 
         res.json({ success: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to accept access request';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to accept access request' });
     }
 });
 
@@ -205,22 +223,25 @@ router.delete('/access-requests/:id', adminOnly, async (req, res) => {
     if (!id) return res.status(400).json({ error: 'Missing id' });
 
     try {
-        const result = await (prisma as any).accessRequest.deleteMany({ where: { id } });
+        const result = await (prisma as any).accessRequest.deleteMany({
+            where: { id },
+        });
         if (result.count === 0) {
             return res.status(404).json({ error: 'Access request not found' });
         }
         res.json({ success: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to decline access request';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to decline access request' });
     }
 });
 
 // Get admin notification settings
 router.get('/notification-settings', adminOnly, async (_req, res) => {
     try {
-        let settings = await (prisma as any).adminNotificationSettings.findFirst();
-        
+        let settings = await (
+            prisma as any
+        ).adminNotificationSettings.findFirst();
+
         // Create default settings if they don't exist
         if (!settings) {
             settings = await (prisma as any).adminNotificationSettings.create({
@@ -233,9 +254,10 @@ router.get('/notification-settings', adminOnly, async (_req, res) => {
         }
 
         res.json({ settings });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to fetch admin notification settings';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({
+            error: 'Failed to fetch admin notification settings',
+        });
     }
 });
 
@@ -254,8 +276,10 @@ router.put('/notification-settings', adminOnly, async (req, res) => {
 
     try {
         // Get existing settings or create default
-        let settings = await (prisma as any).adminNotificationSettings.findFirst();
-        
+        let settings = await (
+            prisma as any
+        ).adminNotificationSettings.findFirst();
+
         if (!settings) {
             settings = await (prisma as any).adminNotificationSettings.create({
                 data: {
@@ -273,9 +297,10 @@ router.put('/notification-settings', adminOnly, async (req, res) => {
         }
 
         res.json({ settings, success: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to update admin notification settings';
-        res.status(500).json({ error: msg });
+    } catch {
+        res.status(500).json({
+            error: 'Failed to update admin notification settings',
+        });
     }
 });
 

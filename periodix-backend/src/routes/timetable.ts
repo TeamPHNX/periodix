@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authMiddleware } from '../server/authMiddleware.js';
-import jwt from 'jsonwebtoken';
 import {
     getOrFetchTimetableRange,
     getHolidays,
@@ -42,14 +41,15 @@ router.get('/holidays', authMiddleware, async (req, res) => {
         res.json({ ok: true, data: holidays });
     } catch (e: any) {
         const status = e?.status || 500;
+        const isServerError = status >= 500;
         console.error('[timetable/holidays] error', {
             status,
             message: e?.message,
             code: e?.code,
         });
         res.status(status).json({
-            error: e?.message || 'Failed',
-            code: e?.code,
+            error: isServerError ? 'Failed' : e?.message || 'Failed',
+            code: isServerError ? undefined : e?.code,
         });
     }
 });
@@ -75,14 +75,15 @@ router.get('/absences', authMiddleware, untisUserLimiter, async (req, res) => {
         res.json(data);
     } catch (e: any) {
         const status = e?.status || 500;
+        const isServerError = status >= 500;
         console.error('[timetable/absences] error', {
             status,
             message: e?.message,
             code: e?.code,
         });
         res.status(status).json({
-            error: e?.message || 'Failed',
-            code: e?.code,
+            error: isServerError ? 'Failed' : e?.message || 'Failed',
+            code: isServerError ? undefined : e?.code,
         });
     }
 });
@@ -100,14 +101,15 @@ router.get('/me', authMiddleware, untisUserLimiter, async (req, res) => {
         res.json(data);
     } catch (e: any) {
         const status = e?.status || 500;
+        const isServerError = status >= 500;
         console.error('[timetable/me] error', {
             status,
             message: e?.message,
             code: e?.code,
         });
         res.status(status).json({
-            error: e?.message || 'Failed',
-            code: e?.code,
+            error: isServerError ? 'Failed' : e?.message || 'Failed',
+            code: isServerError ? undefined : e?.code,
         });
     }
 });
@@ -127,17 +129,7 @@ router.get(
             const { userId, start, end } = params.data;
             const requesterId = req.user!.id;
 
-            // Check if user is admin
-            const auth = req.headers.authorization || '';
-            const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-            let isAdmin = false;
-            try {
-                const decoded: any = jwt.verify(
-                    token,
-                    process.env.JWT_SECRET || 'dev-secret'
-                );
-                isAdmin = Boolean(decoded?.isAdmin);
-            } catch {}
+            const isAdmin = Boolean(req.user?.isAdmin);
 
             // Admins can view any user's timetable
             if (isAdmin) {
@@ -208,17 +200,18 @@ router.get(
             res.json(data);
         } catch (e: any) {
             const status = e?.status || 500;
+            const isServerError = status >= 500;
             console.error('[timetable/user] error', {
                 status,
                 message: e?.message,
                 code: e?.code,
             });
             res.status(status).json({
-                error: e?.message || 'Failed',
-                code: e?.code,
+                error: isServerError ? 'Failed' : e?.message || 'Failed',
+                code: isServerError ? undefined : e?.code,
             });
         }
-    }
+    },
 );
 
 // Get list of classes available to the user
@@ -228,14 +221,15 @@ router.get('/classes', authMiddleware, untisClassLimiter, async (req, res) => {
         res.json({ ok: true, classes });
     } catch (e: any) {
         const status = e?.status || 500;
+        const isServerError = status >= 500;
         console.error('[timetable/classes] error', {
             status,
             message: e?.message,
             code: e?.code,
         });
         res.status(status).json({
-            error: e?.message || 'Failed',
-            code: e?.code,
+            error: isServerError ? 'Failed' : e?.message || 'Failed',
+            code: isServerError ? undefined : e?.code,
         });
     }
 });
@@ -266,17 +260,18 @@ router.get(
             res.json(data);
         } catch (e: any) {
             const status = e?.status || 500;
+            const isServerError = status >= 500;
             console.error('[timetable/class] error', {
                 status,
                 message: e?.message,
                 code: e?.code,
             });
             res.status(status).json({
-                error: e?.message || 'Failed',
-                code: e?.code,
+                error: isServerError ? 'Failed' : e?.message || 'Failed',
+                code: isServerError ? undefined : e?.code,
             });
         }
-    }
+    },
 );
 
 // Search for classes
@@ -295,17 +290,18 @@ router.get(
             res.json({ classes });
         } catch (e: any) {
             const status = e?.status || 500;
+            const isServerError = status >= 500;
             console.error('[timetable/classes/search] error', {
                 status,
                 message: e?.message,
                 code: e?.code,
             });
             res.status(status).json({
-                error: e?.message || 'Failed',
-                code: e?.code,
+                error: isServerError ? 'Failed' : e?.message || 'Failed',
+                code: isServerError ? undefined : e?.code,
             });
         }
-    }
+    },
 );
 
 export default router;

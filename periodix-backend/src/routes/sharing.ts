@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authMiddleware } from '../server/authMiddleware.js';
 import { prisma } from '../store/prisma.js';
-import jwt from 'jsonwebtoken';
 import { WHITELIST_ENABLED } from '../server/config.js';
 
 const router = Router();
@@ -13,27 +12,13 @@ const shareUserSchema = z.object({
 });
 
 const updateSharingSchema = z.object({
-    enabled: z.boolean(),
+    enabled: z.boolean().optional(),
+    listedInShareSearch: z.boolean().optional(),
 });
 
 const globalSharingSchema = z.object({
     enabled: z.boolean(),
 });
-
-// Helper function to determine if user is admin
-function isAdminUser(req: any): boolean {
-    try {
-        const auth = req.headers.authorization || '';
-        const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-        const decoded: any = jwt.verify(
-            token,
-            process.env.JWT_SECRET || 'dev-secret'
-        );
-        return Boolean(decoded?.isAdmin);
-    } catch {
-        return false;
-    }
-}
 
 // Utility: safely access a Prisma model that might not exist if the generated client is stale
 function getModel(name: string): any | null {
@@ -42,7 +27,9 @@ function getModel(name: string): any | null {
         // Log only once per model name to reduce noise
         const flag = `__logged_missing_${name}`;
         if (!(global as any)[flag]) {
-            console.warn(`[sharing] Prisma model "${name}" missing. Likely prisma generate hasn't run after schema change.`);
+            console.warn(
+                `[sharing] Prisma model "${name}" missing. Likely prisma generate hasn't run after schema change.`,
+            );
             (global as any)[flag] = true;
         }
         return null;
@@ -54,13 +41,13 @@ function getModel(name: string): any | null {
 router.get('/settings', authMiddleware, async (req, res) => {
     try {
         const userId = req.user!.id;
-        
+
         // Get user's sharing settings
         const user = await (prisma as any).user.findUnique({
             where: { id: userId },
-            select: { sharingEnabled: true },
+            select: { sharingEnabled: true, shareSearchVisible: true },
         });
-        
+
         // Get list of users this user is sharing with (guard if model missing)
         let sharingWith: any[] = [];
         const timetableShareModel = getModel('timetableShare');
@@ -74,20 +61,22 @@ router.get('/settings', authMiddleware, async (req, res) => {
                 },
             });
         }
-        
+
         // Get global sharing setting (for admins)
         let globalSharingEnabled = true;
-        const admin = isAdminUser(req);
+        const admin = Boolean(req.user?.isAdmin);
         if (admin) {
             const appSettingsModel = getModel('appSettings');
             if (appSettingsModel) {
                 const appSettings = await appSettingsModel.findFirst();
-                globalSharingEnabled = appSettings?.globalSharingEnabled ?? true;
+                globalSharingEnabled =
+                    appSettings?.globalSharingEnabled ?? true;
             }
         }
-        
+
         res.json({
             sharingEnabled: user?.sharingEnabled ?? false,
+            listedInShareSearch: user?.shareSearchVisible ?? true,
             sharingWith: sharingWith.map((s: any) => s.sharedWith),
             globalSharingEnabled,
             isAdmin: admin,
@@ -107,16 +96,29 @@ router.put('/settings', authMiddleware, async (req, res) => {
     if (!parsed.success) {
         return res.status(400).json({ error: parsed.error.flatten() });
     }
-    
+
     try {
         const userId = req.user!.id;
-        const { enabled } = parsed.data;
-        
+        const data: Record<string, unknown> = {};
+
+        if (typeof parsed.data.enabled === 'boolean') {
+            data.sharingEnabled = parsed.data.enabled;
+        }
+        if (typeof parsed.data.listedInShareSearch === 'boolean') {
+            data.shareSearchVisible = parsed.data.listedInShareSearch;
+        }
+
+        if (Object.keys(data).length === 0) {
+            return res.status(400).json({
+                error: 'At least one sharing setting must be provided',
+            });
+        }
+
         await (prisma as any).user.update({
             where: { id: userId },
-            data: { sharingEnabled: enabled },
+            data,
         });
-        
+
         res.json({ success: true });
     } catch (error) {
         console.error('[sharing/settings] error', error);
@@ -130,29 +132,35 @@ router.post('/share', authMiddleware, async (req, res) => {
     if (!parsed.success) {
         return res.status(400).json({ error: parsed.error.flatten() });
     }
-    
+
     try {
         const ownerId = req.user!.id;
         const { userId: sharedWithId } = parsed.data;
-        
+
         // Can't share with yourself
         if (ownerId === sharedWithId) {
-            return res.status(400).json({ error: 'Cannot share with yourself' });
+            return res
+                .status(400)
+                .json({ error: 'Cannot share with yourself' });
         }
-        
+
         // Check if target user exists
         const targetUser = await (prisma as any).user.findUnique({
             where: { id: sharedWithId },
             select: { id: true, username: true, displayName: true },
         });
-        
+
         if (!targetUser) {
             return res.status(404).json({ error: 'User not found' });
         }
-        
+
         const timetableShareModel = getModel('timetableShare');
         if (!timetableShareModel) {
-            return res.status(503).json({ error: 'Sharing feature temporarily unavailable (server missing updated Prisma client)' });
+            return res
+                .status(503)
+                .json({
+                    error: 'Sharing feature temporarily unavailable (server missing updated Prisma client)',
+                });
         }
         // Create or update share relationship
         await timetableShareModel.upsert({
@@ -168,7 +176,7 @@ router.post('/share', authMiddleware, async (req, res) => {
                 sharedWithId,
             },
         });
-        
+
         res.json({ success: true, user: targetUser });
     } catch (error) {
         console.error('[sharing/share] error', error);
@@ -182,14 +190,18 @@ router.delete('/share/:userId', authMiddleware, async (req, res) => {
     if (!parsed.success) {
         return res.status(400).json({ error: parsed.error.flatten() });
     }
-    
+
     try {
         const ownerId = req.user!.id;
         const { userId: sharedWithId } = parsed.data;
-        
+
         const timetableShareModel = getModel('timetableShare');
         if (!timetableShareModel) {
-            return res.status(503).json({ error: 'Sharing feature temporarily unavailable (server missing updated Prisma client)' });
+            return res
+                .status(503)
+                .json({
+                    error: 'Sharing feature temporarily unavailable (server missing updated Prisma client)',
+                });
         }
         await timetableShareModel.deleteMany({
             where: {
@@ -197,7 +209,7 @@ router.delete('/share/:userId', authMiddleware, async (req, res) => {
                 sharedWithId,
             },
         });
-        
+
         res.json({ success: true });
     } catch (error) {
         console.error('[sharing/unshare] error', error);
@@ -207,21 +219,25 @@ router.delete('/share/:userId', authMiddleware, async (req, res) => {
 
 // Admin: Toggle global sharing
 router.put('/global', authMiddleware, async (req, res) => {
-    if (!isAdminUser(req)) {
+    if (!req.user?.isAdmin) {
         return res.status(403).json({ error: 'Admin access required' });
     }
-    
+
     const parsed = globalSharingSchema.safeParse(req.body);
     if (!parsed.success) {
         return res.status(400).json({ error: parsed.error.flatten() });
     }
-    
+
     try {
         const { enabled } = parsed.data;
-        
+
         const appSettingsModel = getModel('appSettings');
         if (!appSettingsModel) {
-            return res.status(503).json({ error: 'App settings unavailable (missing Prisma model)' });
+            return res
+                .status(503)
+                .json({
+                    error: 'App settings unavailable (missing Prisma model)',
+                });
         }
         // Upsert app settings
         await appSettingsModel.upsert({
@@ -229,11 +245,13 @@ router.put('/global', authMiddleware, async (req, res) => {
             update: { globalSharingEnabled: enabled },
             create: { id: 'singleton', globalSharingEnabled: enabled },
         });
-        
+
         res.json({ success: true });
     } catch (error) {
         console.error('[sharing/global] error', error);
-        res.status(500).json({ error: 'Failed to update global sharing setting' });
+        res.status(500).json({
+            error: 'Failed to update global sharing setting',
+        });
     }
 });
 

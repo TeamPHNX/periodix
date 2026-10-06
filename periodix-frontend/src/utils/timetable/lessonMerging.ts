@@ -60,6 +60,14 @@ function getLessonMergeKey(lesson: Lesson): string {
     return `${lesson.date}|base:${signature.base}`;
 }
 
+export function isLessonIrregular(lesson: Lesson): boolean {
+    return (
+        lesson.code === 'irregular' ||
+        !!lesson.te?.some((t: any) => t.orgname !== undefined) ||
+        !!lesson.ro?.some((r: any) => r.orgname !== undefined)
+    );
+}
+
 /**
  * Check if two lessons can be merged based on matching criteria
  * and break time between them (5 minutes or less)
@@ -73,6 +81,11 @@ export function canMergeLessons(lesson1: Lesson, lesson2: Lesson): boolean {
     const code1 = lesson1.code || '';
     const code2 = lesson2.code || '';
     if (code1 !== code2) return false;
+
+    // Never merge a normal lesson with an irregular lesson
+    const isIrregular1 = isLessonIrregular(lesson1);
+    const isIrregular2 = isLessonIrregular(lesson2);
+    if (isIrregular1 !== isIrregular2) return false;
 
     const sig1 = deriveLessonSignature(lesson1);
     const sig2 = deriveLessonSignature(lesson2);
@@ -121,14 +134,14 @@ export function areExamsIdentical(exam1: Exam, exam2: Exam): boolean {
  */
 export function deduplicateHomework(
     homework1: Homework[] = [],
-    homework2: Homework[] = []
+    homework2: Homework[] = [],
 ): Homework[] {
     const allHomework = [...homework1, ...homework2];
     const deduplicated: Homework[] = [];
 
     for (const hw of allHomework) {
         const existingIndex = deduplicated.findIndex((existing) =>
-            areHomeworkIdentical(existing, hw)
+            areHomeworkIdentical(existing, hw),
         );
 
         if (existingIndex === -1) {
@@ -152,14 +165,14 @@ export function deduplicateHomework(
  */
 export function deduplicateExams(
     exams1: Exam[] = [],
-    exams2: Exam[] = []
+    exams2: Exam[] = [],
 ): Exam[] {
     const allExams = [...exams1, ...exams2];
     const deduplicated: Exam[] = [];
 
     for (const exam of allExams) {
         const existingIndex = deduplicated.findIndex((existing) =>
-            areExamsIdentical(existing, exam)
+            areExamsIdentical(existing, exam),
         );
 
         if (existingIndex === -1) {

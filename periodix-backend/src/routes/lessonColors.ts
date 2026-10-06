@@ -2,7 +2,6 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authMiddleware, adminOnly } from '../server/authMiddleware.js';
 import rateLimit from 'express-rate-limit';
-import jwt from 'jsonwebtoken';
 import { prisma } from '../store/prisma.js';
 
 const router = Router();
@@ -49,25 +48,10 @@ const lessonNameWithContextSchema = z.object({
     viewingUserId: z.string().optional(), // The user whose timetable is being viewed
 });
 
-// Helper function to determine if user is admin
-function isAdminUser(req: any): boolean {
-    const auth = req.headers.authorization || '';
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-    try {
-        const decoded: any = jwt.verify(
-            token,
-            process.env.JWT_SECRET || 'dev-secret'
-        );
-        return !!decoded?.isAdmin;
-    } catch {
-        return false;
-    }
-}
-
 // Get user's lesson colors
 router.get('/my-colors', authMiddleware, colorLimiter, async (req, res) => {
     try {
-        const isAdmin = isAdminUser(req);
+        const isAdmin = Boolean(req.user?.isAdmin);
 
         // Admin: return global defaults (admin has no per-user settings)
         if (isAdmin) {
@@ -80,10 +64,13 @@ router.get('/my-colors', authMiddleware, colorLimiter, async (req, res) => {
                     color: string;
                     offset: number;
                 }>
-            ).reduce((acc: Record<string, string>, item) => {
-                acc[item.lessonName] = item.color;
-                return acc;
-            }, {} as Record<string, string>);
+            ).reduce(
+                (acc: Record<string, string>, item) => {
+                    acc[item.lessonName] = item.color;
+                    return acc;
+                },
+                {} as Record<string, string>,
+            );
             // Return offsets separately to avoid breaking existing clients
             const offsetMap = (
                 defaults as Array<{
@@ -91,10 +78,13 @@ router.get('/my-colors', authMiddleware, colorLimiter, async (req, res) => {
                     color: string;
                     offset: number;
                 }>
-            ).reduce((acc: Record<string, number>, item) => {
-                acc[item.lessonName] = item.offset;
-                return acc;
-            }, {} as Record<string, number>);
+            ).reduce(
+                (acc: Record<string, number>, item) => {
+                    acc[item.lessonName] = item.offset;
+                    return acc;
+                },
+                {} as Record<string, number>,
+            );
             res.json({ colors: colorMap, offsets: offsetMap });
             return;
         }
@@ -143,7 +133,7 @@ router.post('/set-color', authMiddleware, colorLimiter, async (req, res) => {
     }
 
     const { lessonName, color, viewingUserId, offset } = validation.data;
-    const isAdmin = isAdminUser(req);
+    const isAdmin = Boolean(req.user?.isAdmin);
     const currentUserId = req.user!.id;
 
     try {
@@ -213,7 +203,7 @@ router.delete(
         }
 
         const { lessonName, viewingUserId } = validation.data;
-        const isAdmin = isAdminUser(req);
+        const isAdmin = Boolean(req.user?.isAdmin);
         const currentUserId = req.user!.id;
 
         try {
@@ -246,7 +236,7 @@ router.delete(
             console.error('[lessonColors/remove-color] error', error);
             res.status(500).json({ error: 'Failed to remove lesson color' });
         }
-    }
+    },
 );
 
 // Admin routes for default colors
@@ -262,12 +252,12 @@ router.get('/defaults', authMiddleware, colorLimiter, async (req, res) => {
         const colorMap = defaults.reduce(
             (
                 acc: Record<string, string>,
-                { lessonName, color }: { lessonName: string; color: string }
+                { lessonName, color }: { lessonName: string; color: string },
             ) => {
                 acc[lessonName] = color;
                 return acc;
             },
-            {} as Record<string, string>
+            {} as Record<string, string>,
         );
 
         res.json(colorMap);
@@ -306,7 +296,7 @@ router.post(
                 error: 'Failed to set default lesson color',
             });
         }
-    }
+    },
 );
 
 export default router;

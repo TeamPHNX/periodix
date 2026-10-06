@@ -27,9 +27,8 @@ router.delete('/users/:id', adminOrUserManagerOnly, async (req, res) => {
         if (result.count === 0)
             return res.status(404).json({ error: 'User not found' });
         res.json({ ok: true, count: result.count });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to delete user';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to delete user' });
     }
 });
 
@@ -37,12 +36,12 @@ router.delete('/users/:id', adminOrUserManagerOnly, async (req, res) => {
 router.patch('/users/:id', adminOrUserManagerOnly, async (req, res) => {
     const id = req.params.id;
     if (!id) return res.status(400).json({ error: 'Missing id' });
-    
+
     const parsed = updateUserSchema.safeParse(req.body);
     if (!parsed.success) {
         return res.status(400).json({ error: parsed.error.flatten() });
     }
-    
+
     try {
         const user = await (prisma as any).user.update({
             where: { id },
@@ -50,9 +49,8 @@ router.patch('/users/:id', adminOrUserManagerOnly, async (req, res) => {
             select: { id: true, username: true, displayName: true },
         });
         res.json({ user });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to update user';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to update user' });
     }
 });
 
@@ -89,9 +87,8 @@ router.post('/whitelist', adminOrUserManagerOnly, async (req, res) => {
             select: { id: true, value: true, createdAt: true },
         });
         res.json({ rule, created: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to create rule';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to create rule' });
     }
 });
 
@@ -100,13 +97,14 @@ router.delete('/whitelist/:id', adminOrUserManagerOnly, async (req, res) => {
     const id = req.params.id;
     if (!id) return res.status(400).json({ error: 'Missing id' });
     try {
-        const result = await (prisma as any).whitelistRule.deleteMany({ where: { id } });
+        const result = await (prisma as any).whitelistRule.deleteMany({
+            where: { id },
+        });
         if (result.count === 0)
             return res.status(404).json({ error: 'Rule not found' });
         res.json({ ok: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to delete rule';
-        res.status(400).json({ error: msg });
+    } catch {
+        res.status(400).json({ error: 'Failed to delete rule' });
     }
 });
 
@@ -122,62 +120,79 @@ router.get('/access-requests', adminOrUserManagerOnly, async (_req, res) => {
 });
 
 // Accept an access request (add to whitelist and delete request)
-router.post('/access-requests/:id/accept', adminOrUserManagerOnly, async (req, res) => {
-    const id = req.params.id;
-    if (!id) return res.status(400).json({ error: 'Missing id' });
+router.post(
+    '/access-requests/:id/accept',
+    adminOrUserManagerOnly,
+    async (req, res) => {
+        const id = req.params.id;
+        if (!id) return res.status(400).json({ error: 'Missing id' });
 
-    try {
-        // Find the access request
-        const request = await (prisma as any).accessRequest.findUnique({
-            where: { id },
-            select: { id: true, username: true },
-        });
-
-        if (!request) {
-            return res.status(404).json({ error: 'Access request not found' });
-        }
-
-        // Check if already whitelisted
-        const existingRule = await (prisma as any).whitelistRule.findFirst({
-            where: { value: request.username },
-        });
-
-        if (existingRule) {
-            // Delete the request since user is already whitelisted
-            await (prisma as any).accessRequest.deleteMany({ where: { id } });
-            return res.json({ success: true, message: 'User was already whitelisted' });
-        }
-
-        // Add to whitelist and delete request in a transaction
-        await (prisma as any).$transaction(async (tx: any) => {
-            await tx.whitelistRule.create({
-                data: { value: request.username },
+        try {
+            // Find the access request
+            const request = await (prisma as any).accessRequest.findUnique({
+                where: { id },
+                select: { id: true, username: true },
             });
-            await tx.accessRequest.deleteMany({ where: { id } });
-        });
 
-        res.json({ success: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to accept access request';
-        res.status(400).json({ error: msg });
-    }
-});
+            if (!request) {
+                return res
+                    .status(404)
+                    .json({ error: 'Access request not found' });
+            }
+
+            // Check if already whitelisted
+            const existingRule = await (prisma as any).whitelistRule.findFirst({
+                where: { value: request.username },
+            });
+
+            if (existingRule) {
+                // Delete the request since user is already whitelisted
+                await (prisma as any).accessRequest.deleteMany({
+                    where: { id },
+                });
+                return res.json({
+                    success: true,
+                    message: 'User was already whitelisted',
+                });
+            }
+
+            // Add to whitelist and delete request in a transaction
+            await (prisma as any).$transaction(async (tx: any) => {
+                await tx.whitelistRule.create({
+                    data: { value: request.username },
+                });
+                await tx.accessRequest.deleteMany({ where: { id } });
+            });
+
+            res.json({ success: true });
+        } catch {
+            res.status(400).json({ error: 'Failed to accept access request' });
+        }
+    },
+);
 
 // Decline an access request (delete request)
-router.delete('/access-requests/:id', adminOrUserManagerOnly, async (req, res) => {
-    const id = req.params.id;
-    if (!id) return res.status(400).json({ error: 'Missing id' });
+router.delete(
+    '/access-requests/:id',
+    adminOrUserManagerOnly,
+    async (req, res) => {
+        const id = req.params.id;
+        if (!id) return res.status(400).json({ error: 'Missing id' });
 
-    try {
-        const result = await (prisma as any).accessRequest.deleteMany({ where: { id } });
-        if (result.count === 0) {
-            return res.status(404).json({ error: 'Access request not found' });
+        try {
+            const result = await (prisma as any).accessRequest.deleteMany({
+                where: { id },
+            });
+            if (result.count === 0) {
+                return res
+                    .status(404)
+                    .json({ error: 'Access request not found' });
+            }
+            res.json({ success: true });
+        } catch {
+            res.status(400).json({ error: 'Failed to decline access request' });
         }
-        res.json({ success: true });
-    } catch (e: any) {
-        const msg = e?.message || 'Failed to decline access request';
-        res.status(400).json({ error: msg });
-    }
-});
+    },
+);
 
 export default router;

@@ -4,6 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -15,8 +16,12 @@ model User {
   untisSecretCiphertext     Bytes?
   untisSecretNonce          Bytes?
   untisSecretKeyVersion     Int?                       @default(1)
+  sduiAccessToken           String?
+  sduiUserId                String?
+  sduiSchoolLink            String?
   displayName               String?
   sharingEnabled            Boolean                    @default(true)
+  shareSearchVisible        Boolean                    @default(true)
   isUserManager             Boolean                    @default(false)
   timezone                  String                     @default("Europe/Berlin")
   hiddenSubjects            Json?

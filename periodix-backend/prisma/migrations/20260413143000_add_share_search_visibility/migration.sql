@@ -1,0 +1,2 @@
+ALTER TABLE "User"
+ADD COLUMN "shareSearchVisible" BOOLEAN NOT NULL DEFAULT true;

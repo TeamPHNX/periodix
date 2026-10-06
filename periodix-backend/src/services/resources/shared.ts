@@ -4,12 +4,11 @@ import { decryptSecret } from '../../server/crypto.js';
 import { UNTIS_DEFAULT_SCHOOL } from '../../server/config.js';
 import { AppError } from '../../server/errors.js';
 import {
-    endOfISOWeek,
     normalizeUntisClass,
-    startOfISOWeek,
     toHost,
     type UserClassRecord,
 } from '../untisService.js';
+import { endOfISOWeek, startOfISOWeek } from '../untisDateUtils.js';
 import type { RoomInfo, TimegridDay } from './aggregate.js';
 
 // Current and upcoming weeks are considered stale after this long.

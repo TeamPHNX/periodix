@@ -3,16 +3,16 @@ import argon2 from 'argon2';
 
 // Provides hashing and symmetric encryption helpers.
 
-const MASTER_KEY_HEX = process.env.PERIODIX_MASTER_KEY || '';
+const MASTER_KEY_HEX = process.env.PERIODIX_MASTER_KEY;
 if (!MASTER_KEY_HEX) {
-    console.warn(
-        '[crypto] PERIODIX_MASTER_KEY not set; using insecure dev key'
+    throw new Error('PERIODIX_MASTER_KEY is required');
+}
+if (!/^[0-9a-fA-F]{64}$/.test(MASTER_KEY_HEX)) {
+    throw new Error(
+        'PERIODIX_MASTER_KEY must be a 64-character hex string (32 bytes)',
     );
 }
-// Derive 32-byte key from provided hex or fallback
-const masterKey = MASTER_KEY_HEX
-    ? Buffer.from(MASTER_KEY_HEX, 'hex')
-    : crypto.createHash('sha256').update('dev-master-key').digest();
+const masterKey = Buffer.from(MASTER_KEY_HEX, 'hex');
 
 export async function hashPassword(pw: string) {
     return argon2.hash(pw, {
