@@ -29,6 +29,12 @@ import LessonModal from './LessonModal';
 import HolidayModal from './HolidayModal';
 import TimeAxis from './TimeAxis';
 import DayColumn from './DayColumn';
+import HolidaySpanOverlay from './HolidaySpanOverlay';
+import {
+    daysCoveredBySpans,
+    getHolidayForDate,
+    getHolidaySpans,
+} from '../utils/holidaySpans';
 import TimetableSkeleton from './TimetableSkeleton';
 import {
     shouldNavigateWeek,
@@ -58,7 +64,7 @@ declare global {
 }
 
 export default function Timetable({
-    data,
+    data: rawData,
     holidays = [],
     weekStart,
     lessonColors = {},
@@ -74,6 +80,7 @@ export default function Timetable({
     isOnboardingActive,
     isRateLimited,
     isClassView = false,
+    resourceView,
 }: {
     data: TimetableResponse | null;
     holidays?: Holiday[];
@@ -97,10 +104,46 @@ export default function Timetable({
     isOnboardingActive?: boolean;
     isRateLimited?: boolean;
     isClassView?: boolean;
+    // Teacher / room overview: lesson blocks show the classes instead of the
+    // teacher (teacher view) or room (room view), which is already known
+    resourceView?: 'teacher' | 'room';
     // Extended: allow passing current offset when color set
     // (so initial color creation can persist chosen offset)
     // Keeping backwards compatibility (third param optional)
 }) {
+    const resourceOriginals = useMemo(() => {
+        const map = new Map<number, Lesson>();
+        if (resourceView && Array.isArray(rawData?.payload)) {
+            for (const l of rawData.payload as Lesson[]) map.set(l.id, l);
+        }
+        return map;
+    }, [rawData?.payload, resourceView]);
+    const data = useMemo<TimetableResponse | null>(() => {
+        if (!resourceView || !rawData || !Array.isArray(rawData.payload)) {
+            return rawData;
+        }
+        return {
+            ...rawData,
+            payload: (rawData.payload as Lesson[]).map((l) => {
+                const classes = (l.kl ?? []).map((k) => ({
+                    id: k.id,
+                    name: k.name,
+                    longname: k.longname,
+                }));
+                return resourceView === 'teacher'
+                    ? { ...l, te: classes }
+                    : { ...l, ro: classes };
+            }),
+        };
+    }, [rawData, resourceView]);
+    // The modal should show the real teacher / room again
+    const withOriginalPeople = (lesson: Lesson): Lesson => {
+        const original = resourceOriginals.get(lesson.id);
+        return original
+            ? { ...lesson, te: original.te, ro: original.ro }
+            : lesson;
+    };
+
     const START_MIN = 7 * 60 + 40; // 07:40
     const END_MIN = 17 * 60 + 15; // 17:15
     const totalMinutes = END_MIN - START_MIN;
@@ -267,7 +310,7 @@ export default function Timetable({
     }, []);
 
     const handleLessonClick = (lesson: Lesson) => {
-        setSelectedLesson(lesson);
+        setSelectedLesson(withOriginalPeople(lesson));
         // Build overlapping group for the clicked lesson within its day
         try {
             const dayIso = yyyymmddToISO(lesson.date);
@@ -283,7 +326,9 @@ export default function Timetable({
                 (a, b) => a.startTime - b.startTime || a.endTime - b.endTime,
             );
             const idx = overlaps.findIndex((l) => l.id === lesson.id);
-            setSelectedGroup(overlaps.length > 1 ? overlaps : null);
+            setSelectedGroup(
+                overlaps.length > 1 ? overlaps.map(withOriginalPeople) : null,
+            );
             setSelectedIndexInGroup(idx >= 0 ? idx : 0);
         } catch {
             setSelectedGroup(null);
@@ -369,7 +414,13 @@ export default function Timetable({
         return () => window.removeEventListener('resize', computeScale);
     }, [totalMinutes]);
 
-    const monday = startOfWeek(weekStart);
+    // Memoized by time value: a fresh Date each render made `days` and everything
+    // derived from it (lessonsByDay, ...) recompute on every render, even mid-swipe
+    const weekStartTime = weekStart.getTime();
+    const monday = useMemo(
+        () => startOfWeek(new Date(weekStartTime)),
+        [weekStartTime],
+    );
     const days = useMemo(
         () => Array.from({ length: 5 }, (_, i) => addDays(monday, i)),
         [monday],
@@ -484,6 +535,23 @@ export default function Timetable({
     useEffect(() => {
         focusedDayRef.current = focusedDay;
     }, [focusedDay]);
+    // Keep day view valid when the week changes from outside (e.g. "My timetable"
+    // jumps to the current week). A focused day outside the shown week left an
+    // empty header with no way back to the week view. Day swipes across weeks
+    // set their own target day, so skip while that animation runs.
+    useEffect(() => {
+        if (!focusedDay || isDayAnimatingRef.current) return;
+        const keys = days.map((d) => fmtLocal(d));
+        if (keys.includes(focusedDay)) return;
+        const todayKey = fmtLocal(new Date());
+        if (keys.includes(todayKey)) {
+            setFocusedDay(todayKey);
+            return;
+        }
+        const [y, m, d] = focusedDay.split('-').map(Number);
+        const weekdayIndex = (new Date(y, m - 1, d).getDay() + 6) % 7; // Mon=0
+        setFocusedDay(keys[Math.min(weekdayIndex, keys.length - 1)] ?? null);
+    }, [days, focusedDay]);
     useEffect(() => {
         weekStartRef.current = weekStart;
     }, [weekStart]);
@@ -1576,28 +1644,9 @@ export default function Timetable({
         (weekDays: Date[]) => {
             if (!holidays.length) return null;
 
-            const getHolidayForDate = (d: Date) => {
-                const current = new Date(d);
-                current.setHours(0, 0, 0, 0);
-
-                return holidays.find((h) => {
-                    const parseUntisDate = (n: number) => {
-                        const s = String(n);
-                        const y = Number(s.slice(0, 4));
-                        const mo = Number(s.slice(4, 6));
-                        const day = Number(s.slice(6, 8));
-                        return new Date(y, mo - 1, day);
-                    };
-
-                    const start = parseUntisDate(h.startDate);
-                    const end = parseUntisDate(h.endDate);
-                    start.setHours(0, 0, 0, 0);
-                    end.setHours(0, 0, 0, 0);
-                    return current >= start && current <= end;
-                });
-            };
-
-            const dayHolidays = weekDays.map((d) => getHolidayForDate(d));
+            const dayHolidays = weekDays.map((d) =>
+                getHolidayForDate(holidays, d),
+            );
             const allDaysAreHolidays = dayHolidays.every((h) => !!h);
 
             if (!allDaysAreHolidays) return null;
@@ -1615,6 +1664,48 @@ export default function Timetable({
         },
         [holidays],
     );
+
+    // Consecutive days of the same holiday inside a week share one banner
+    const buildHolidaySpans = useCallback(
+        (weekDays: Date[]) => {
+            const spans = getHolidaySpans(weekDays, holidays);
+            return { spans, covered: daysCoveredBySpans(spans) };
+        },
+        [holidays],
+    );
+    const weekHolidaySpans = useMemo(
+        () => buildHolidaySpans(days),
+        [days, buildHolidaySpans],
+    );
+    const prevWeekHolidaySpans = useMemo(
+        () => buildHolidaySpans(prevWeekDays),
+        [prevWeekDays, buildHolidaySpans],
+    );
+    const nextWeekHolidaySpans = useMemo(
+        () => buildHolidaySpans(nextWeekDays),
+        [nextWeekDays, buildHolidaySpans],
+    );
+
+    // Longest run of non-holiday days, where the "no timetable" hint is shown
+    const emptyWeekMessageColumns = useMemo(() => {
+        let best = { start: 0, end: days.length - 1 };
+        let bestLength = 0;
+        let runStart = -1;
+        days.forEach((d, i) => {
+            const isHoliday = !!getHolidayForDate(holidays, d);
+            if (!isHoliday && runStart < 0) runStart = i;
+            const runEnds = isHoliday || i === days.length - 1;
+            if (runStart >= 0 && runEnds) {
+                const end = isHoliday ? i - 1 : i;
+                if (end - runStart + 1 > bestLength) {
+                    best = { start: runStart, end };
+                    bestLength = end - runStart + 1;
+                }
+                runStart = -1;
+            }
+        });
+        return best;
+    }, [days, holidays]);
 
     const weekHolidayInfo = useMemo(
         () => getWeekHolidayInfo(days),
@@ -2027,7 +2118,12 @@ export default function Timetable({
                                                     }
                                                     isDayView
                                                 />
-                                                {!items.length && (
+                                                {/* A holiday banner already explains an empty day */}
+                                                {!items.length &&
+                                                    !getHolidayForDate(
+                                                        holidays,
+                                                        dayObj,
+                                                    ) && (
                                                     <div className="absolute inset-0 flex items-center justify-center z-40">
                                                         <div className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-lg border border-dashed border-slate-300 dark:border-slate-600 p-6 text-center text-slate-600 dark:text-slate-300 shadow-lg">
                                                             No lessons for this
@@ -2279,7 +2375,7 @@ export default function Timetable({
                                             } bg-orange-200/40 dark:bg-orange-500/20 ring-2 ring-orange-400/50 dark:ring-orange-500/30`}
                                         />
                                     )}
-                                    {prevWeekDays.map((d) => {
+                                    {prevWeekDays.map((d, dayIndex) => {
                                         const key = fmtLocal(d);
                                         const items =
                                             prevWeekLessonsByDay[key] || [];
@@ -2318,7 +2414,10 @@ export default function Timetable({
                                                         isClassView
                                                     }
                                                     suppressHolidayBanner={
-                                                        prevWeekHolidayInfo?.isSameHoliday
+                                                        prevWeekHolidayInfo?.isSameHoliday ||
+                                                        prevWeekHolidaySpans.covered.has(
+                                                            dayIndex,
+                                                        )
                                                     }
                                                     onHolidayClick={
                                                         handleHolidayClick
@@ -2333,6 +2432,13 @@ export default function Timetable({
                                             </div>
                                         );
                                     })}
+                                    {!prevWeekHolidayInfo?.isSameHoliday && (
+                                        <HolidaySpanOverlay
+                                            spans={prevWeekHolidaySpans.spans}
+                                            dayCount={prevWeekDays.length}
+                                            onHolidayClick={handleHolidayClick}
+                                        />
+                                    )}
                                     {prevWeekHolidayInfo?.isSameHoliday &&
                                         prevWeekHolidayInfo.holiday && (
                                             <div
@@ -2385,7 +2491,7 @@ export default function Timetable({
                                     )}
                                     {/* Current time line moved to parent container */}
 
-                                    {days.map((d) => {
+                                    {days.map((d, dayIndex) => {
                                         const key = fmtLocal(d);
                                         const items = lessonsByDay[key] || [];
                                         const isToday = key === todayISO;
@@ -2421,7 +2527,10 @@ export default function Timetable({
                                                         isDeveloperMode
                                                     }
                                                     suppressHolidayBanner={
-                                                        weekHolidayInfo?.isSameHoliday
+                                                        weekHolidayInfo?.isSameHoliday ||
+                                                        weekHolidaySpans.covered.has(
+                                                            dayIndex,
+                                                        )
                                                     }
                                                     isClassTimetable={
                                                         isClassView
@@ -2442,12 +2551,32 @@ export default function Timetable({
                                     {!hasLessons &&
                                         !weekHolidayInfo?.isFullWeek &&
                                         !isRateLimited && (
-                                            <div className="absolute inset-0 flex items-center justify-center z-50">
-                                                <div className="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-lg border border-dashed border-slate-300 dark:border-slate-600 p-6 text-center text-slate-600 dark:text-slate-300 shadow-lg">
-                                                    No timetable for this week.
+                                            <div
+                                                className="pointer-events-none absolute inset-0 z-50 grid gap-x-px sm:gap-x-1"
+                                                style={{
+                                                    gridTemplateColumns: `repeat(${days.length}, minmax(0, 1fr))`,
+                                                }}
+                                            >
+                                                {/* Centered over the school days so it doesn't cover a holiday banner */}
+                                                <div
+                                                    className="row-start-1 flex items-center justify-center px-1"
+                                                    style={{
+                                                        gridColumn: `${emptyWeekMessageColumns.start + 1} / ${emptyWeekMessageColumns.end + 2}`,
+                                                    }}
+                                                >
+                                                    <div className="pointer-events-auto bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-lg border border-dashed border-slate-300 dark:border-slate-600 p-3 sm:p-6 text-center text-sm sm:text-base text-slate-600 dark:text-slate-300 shadow-lg">
+                                                        No timetable for this week.
+                                                    </div>
                                                 </div>
                                             </div>
                                         )}
+                                    {!weekHolidayInfo?.isSameHoliday && (
+                                        <HolidaySpanOverlay
+                                            spans={weekHolidaySpans.spans}
+                                            dayCount={days.length}
+                                            onHolidayClick={handleHolidayClick}
+                                        />
+                                    )}
                                     {weekHolidayInfo?.isSameHoliday &&
                                         weekHolidayInfo.holiday && (
                                             <div
@@ -2497,7 +2626,7 @@ export default function Timetable({
                                             } bg-orange-200/40 dark:bg-orange-500/20 ring-2 ring-orange-400/50 dark:ring-orange-500/30`}
                                         />
                                     )}
-                                    {nextWeekDays.map((d) => {
+                                    {nextWeekDays.map((d, dayIndex) => {
                                         const key = fmtLocal(d);
                                         const items =
                                             nextWeekLessonsByDay[key] || [];
@@ -2536,7 +2665,10 @@ export default function Timetable({
                                                         isClassView
                                                     }
                                                     suppressHolidayBanner={
-                                                        nextWeekHolidayInfo?.isSameHoliday
+                                                        nextWeekHolidayInfo?.isSameHoliday ||
+                                                        nextWeekHolidaySpans.covered.has(
+                                                            dayIndex,
+                                                        )
                                                     }
                                                     onHolidayClick={
                                                         handleHolidayClick
@@ -2551,6 +2683,13 @@ export default function Timetable({
                                             </div>
                                         );
                                     })}
+                                    {!nextWeekHolidayInfo?.isSameHoliday && (
+                                        <HolidaySpanOverlay
+                                            spans={nextWeekHolidaySpans.spans}
+                                            dayCount={nextWeekDays.length}
+                                            onHolidayClick={handleHolidayClick}
+                                        />
+                                    )}
                                     {nextWeekHolidayInfo?.isSameHoliday &&
                                         nextWeekHolidayInfo.holiday && (
                                             <div
@@ -2638,6 +2777,7 @@ export default function Timetable({
                 gradientOffsets={gradientOffsets}
                 onGradientOffsetChange={updateGradientOffset}
                 isOnboardingActive={isOnboardingActive}
+                showClasses={!!resourceView}
             />
             <HolidayModal
                 holiday={selectedHoliday}

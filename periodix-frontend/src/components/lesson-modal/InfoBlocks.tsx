@@ -8,9 +8,11 @@ import {
 export function LessonInfoBlocks({
     lesson,
     cancelled,
+    showClasses = false,
 }: {
     lesson: Lesson;
     cancelled: boolean;
+    showClasses?: boolean;
 }) {
     const subject = lesson.su?.[0]?.name ?? lesson.activityType ?? '—';
     const subjectLong = lesson.su?.[0]?.longname ?? subject;
@@ -59,6 +61,20 @@ export function LessonInfoBlocks({
                     {startTime} - {endTime}
                 </p>
             </div>
+            {showClasses && !!lesson.kl?.length && (
+                <div>
+                    <h3 className="text-sm font-medium text-slate-500 dark:text-slate-400 mb-2">
+                        Classes
+                    </h3>
+                    <p
+                        className={`text-slate-900 dark:text-slate-100 ${
+                            cancelled ? 'lesson-cancelled' : ''
+                        }`}
+                    >
+                        {lesson.kl.map((k) => k.name).join(', ')}
+                    </p>
+                </div>
+            )}
             {teacherInfo.current && (
                 <div>
                     <h3 className="text-sm font-medium text-slate-500 dark:text-slate-400 mb-2">

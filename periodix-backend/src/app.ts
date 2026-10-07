@@ -13,6 +13,7 @@ import sharingRoutes from './routes/sharing.js';
 import accessRequestRoutes from './routes/accessRequest.js';
 import notificationRoutes from './routes/notifications.js';
 import analyticsRoutes from './routes/analytics.js';
+import resourcesRoutes from './routes/resources.js';
 import sduiRoutes from './routes/sdui.js';
 
 dotenv.config();
@@ -167,6 +168,7 @@ app.use('/api/sharing', sharingRoutes);
 app.use('/api/access-request', accessRequestRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/resources', resourcesRoutes);
 app.use('/api/sdui', sduiRoutes);
 
 export default app;

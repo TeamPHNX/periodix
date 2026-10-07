@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { adminOnly } from '../server/authMiddleware.js';
 import { prisma } from '../store/prisma.js';
+import { notificationService } from '../services/notificationService.js';
 
 const router = Router();
 
@@ -294,6 +295,11 @@ router.put('/notification-settings', adminOnly, async (req, res) => {
                 where: { id: settings.id },
                 data: parsed.data,
             });
+        }
+
+        // Apply a changed fetch interval right away instead of after a restart
+        if (parsed.data.timetableFetchInterval !== undefined) {
+            await notificationService.scheduleTimetableCheck();
         }
 
         res.json({ settings, success: true });

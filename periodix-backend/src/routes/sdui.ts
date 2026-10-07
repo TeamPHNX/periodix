@@ -2,7 +2,11 @@ import express from 'express';
 import type { Response } from 'express';
 import { SduiClient } from '@teamphnx/sduiapi';
 import { authMiddleware } from '../server/authMiddleware.js';
-import { decryptSecret } from '../server/crypto.js';
+import {
+    decryptSecret,
+    decryptSecretFromString,
+    encryptSecretToString,
+} from '../server/crypto.js';
 import { UNTIS_DEFAULT_SCHOOL } from '../server/config.js';
 import { prisma } from '../store/prisma.js';
 
@@ -159,10 +163,21 @@ async function getSduiUserById(userId: string): Promise<SduiUserRecord | null> {
         untisSecretCiphertext: user.untisSecretCiphertext,
         untisSecretNonce: user.untisSecretNonce,
         untisSecretKeyVersion: user.untisSecretKeyVersion,
-        sduiAccessToken: user.sduiAccessToken,
+        sduiAccessToken: readStoredSduiToken(user.sduiAccessToken),
         sduiUserId: user.sduiUserId,
         sduiSchoolLink: user.sduiSchoolLink,
     };
+}
+
+// SDUI bearer tokens are stored encrypted like the Untis credential
+function readStoredSduiToken(stored: string | null): string | null {
+    if (!stored) return null;
+    try {
+        return decryptSecretFromString(stored);
+    } catch {
+        // Unreadable (e.g. master key rotated): force a fresh SDUI login
+        return null;
+    }
 }
 
 async function authenticateSduiForUser(user: SduiUserRecord): Promise<{
@@ -201,6 +216,12 @@ async function authenticateSduiForUser(user: SduiUserRecord): Promise<{
             );
         }
 
+        // Keep the library's reason in the server log; the client gets a generic error
+        console.warn('[sdui] authentication failed', {
+            userId: user.id,
+            schoolSlink,
+            reason: msg,
+        });
         throw new SduiRouteError(401, 'SDUI Authentication failed');
     }
 
@@ -211,7 +232,7 @@ async function authenticateSduiForUser(user: SduiUserRecord): Promise<{
     await prisma.user.update({
         where: { id: user.id },
         data: {
-            sduiAccessToken: token,
+            sduiAccessToken: encryptSecretToString(token),
             sduiUserId,
             sduiSchoolLink: schoolSlink,
         } as any,
@@ -383,7 +404,6 @@ router.post('/auth', authMiddleware, async (req, res) => {
 
         return res.json({
             success: true,
-            sduiAccessToken: authResult.token,
             sduiUserId: authResult.sduiUserId,
         });
     } catch (error) {

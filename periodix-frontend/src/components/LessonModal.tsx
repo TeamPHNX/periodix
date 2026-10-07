@@ -24,6 +24,7 @@ export default function LessonModal({
     gradientOffsets,
     onGradientOffsetChange,
     isOnboardingActive,
+    showClasses = false,
 }: {
     lesson: Lesson | null;
     // Optional: group of overlapping lessons to present as tabs
@@ -44,6 +45,7 @@ export default function LessonModal({
     gradientOffsets?: Record<string, number>;
     onGradientOffsetChange?: (lessonName: string, offset: number) => void;
     isOnboardingActive?: boolean;
+    showClasses?: boolean;
 }) {
     const [animatingOut, setAnimatingOut] = useState(false);
     const [entered, setEntered] = useState(false);
@@ -327,6 +329,7 @@ export default function LessonModal({
                             <LessonInfoBlocks
                                 lesson={currentLesson}
                                 cancelled={cancelled}
+                                showClasses={showClasses}
                             />
                             <LessonStatus code={currentLesson.code} />
 

@@ -62,6 +62,30 @@ export function decryptSecret(enc: EncryptedSecret): string {
     return plain.toString('utf8');
 }
 
+// Single-string form for secrets kept in text columns: "enc1:<keyVersion>:<nonce>:<ciphertext>".
+const PACKED_SECRET_PREFIX = 'enc1:';
+
+export function encryptSecretToString(plain: string): string {
+    const enc = encryptSecret(plain);
+    return `${PACKED_SECRET_PREFIX}${enc.keyVersion}:${enc.nonce.toString('base64')}:${enc.ciphertext.toString('base64')}`;
+}
+
+/** Decrypts a packed secret. Values without the prefix are legacy plaintext and returned as-is. */
+export function decryptSecretFromString(value: string): string {
+    if (!value.startsWith(PACKED_SECRET_PREFIX)) return value;
+    const [keyVersion, nonce, ciphertext] = value
+        .slice(PACKED_SECRET_PREFIX.length)
+        .split(':');
+    if (!keyVersion || !nonce || !ciphertext) {
+        throw new Error('Malformed encrypted secret');
+    }
+    return decryptSecret({
+        ciphertext: Buffer.from(ciphertext, 'base64'),
+        nonce: Buffer.from(nonce, 'base64'),
+        keyVersion: Number(keyVersion),
+    });
+}
+
 export function bufferToBase64(b: Buffer | null | undefined) {
     return b ? b.toString('base64') : null;
 }

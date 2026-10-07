@@ -31,7 +31,7 @@ const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // Run pruning at most every 6h 
 // Simple in-memory cache for holidays: userId -> { data: any[], timestamp: number }
 const holidayCache = new Map<string, { data: any[]; timestamp: number }>();
 const HOLIDAY_CACHE_TTL = 6 * 60 * 60 * 1000; // 6 hours
-type UserClassRecord = {
+export type UserClassRecord = {
     id: number;
     name: string;
     longName: string;
@@ -228,7 +228,7 @@ async function getLatestCachedClassTimetable(args: {
     return record;
 }
 
-async function storeClassTimetableRecord(args: {
+export async function storeClassTimetableRecord(args: {
     classId: number;
     rangeStart?: Date | null;
     rangeEnd?: Date | null;
@@ -406,7 +406,7 @@ function serializeAbsenceResponse(payload: {
     };
 }
 
-function normalizeUntisClass(entry: any): UserClassRecord | null {
+export function normalizeUntisClass(entry: any): UserClassRecord | null {
     if (!entry) return null;
     const candidates = [
         entry.id,
@@ -438,11 +438,29 @@ function normalizeUntisClass(entry: any): UserClassRecord | null {
     };
 }
 
-async function fetchOwnClassesFromUntis(
+export async function fetchOwnClassesFromUntis(
     untis: any,
 ): Promise<UserClassRecord[]> {
     const seen = new Map<number, UserClassRecord>();
-    if (typeof untis.getOwnClassesList === 'function') {
+    // The login session names the student's class directly; this works even in
+    // holidays, when inferring from the current week's timetable finds nothing.
+    const sessionClassId = untis.sessionInformation?.klasseId;
+    if (typeof sessionClassId === 'number' && sessionClassId > 0) {
+        let record: UserClassRecord | null = null;
+        try {
+            const schoolYear = await untis.getCurrentSchoolyear?.();
+            const allClasses = await untis.getClasses(true, schoolYear?.id);
+            const match = Array.isArray(allClasses)
+                ? allClasses.find((c: any) => c?.id === sessionClassId)
+                : null;
+            record = normalizeUntisClass(match);
+        } catch (e: any) {
+            console.warn('[classes] class name lookup failed', e?.message || e);
+        }
+        const entry = record ?? normalizeUntisClass({ id: sessionClassId });
+        if (entry) seen.set(entry.id, entry);
+    }
+    if (!seen.size && typeof untis.getOwnClassesList === 'function') {
         try {
             const classList = await untis.getOwnClassesList();
             if (Array.isArray(classList)) {
@@ -512,6 +530,41 @@ async function fetchOwnClassesFromUntis(
     }
 
     return Array.from(seen.values());
+}
+
+/**
+ * Persist which classes a user belongs to so the resource overview can pick
+ * one representative account per class. Replaces the user's previous rows.
+ */
+export async function rememberClassMemberships(
+    userId: string,
+    classes: UserClassRecord[],
+): Promise<void> {
+    const now = new Date();
+    await prisma.$transaction([
+        prisma.userClassMembership.deleteMany({ where: { userId } }),
+        prisma.userClassMembership.createMany({
+            data: classes.map((cls) => ({
+                userId,
+                classId: cls.id,
+                className: cls.name,
+            })),
+            skipDuplicates: true,
+        }),
+        prisma.user.update({
+            where: { id: userId },
+            data: { classesSyncedAt: now },
+        }),
+    ]);
+}
+
+function rememberClassMembershipsInBackground(
+    userId: string,
+    classes: UserClassRecord[],
+) {
+    rememberClassMemberships(userId, classes).catch((e) =>
+        console.warn('[classes] failed to persist memberships', e?.message || e),
+    );
 }
 
 function resolvePermittedClassId(
@@ -815,7 +868,7 @@ async function fetchAndStoreUntis(args: {
 }
 
 // Host is fixed via env. Keep helper for future flexibility.
-function toHost() {
+export function toHost() {
     return UNTIS_HOST;
 }
 
@@ -1890,6 +1943,7 @@ export async function getUserClasses(userId: string): Promise<
             );
         }
         classListCache.set(userId, { data: classes, timestamp: Date.now() });
+        rememberClassMembershipsInBackground(userId, classes);
         return classes;
     } catch (e: any) {
         try {
@@ -2029,6 +2083,10 @@ export async function getClassTimetable(args: {
                     data: allowedClasses,
                     timestamp: Date.now(),
                 });
+                rememberClassMembershipsInBackground(
+                    requester.id,
+                    allowedClasses,
+                );
             }
         }
 

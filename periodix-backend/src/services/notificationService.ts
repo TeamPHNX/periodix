@@ -24,6 +24,9 @@ if (vapidPublicKey && vapidPrivateKey) {
     );
 }
 
+// "New absence" notifications only for absences starting within this many days
+const NEW_ABSENCE_LOOKBACK_DAYS = 14;
+
 export interface NotificationData {
     type: string;
     title: string;
@@ -64,6 +67,26 @@ export class NotificationService {
         return new Date(
             new Date().toLocaleString('en-US', { timeZone: userTimezone }),
         );
+    }
+
+    /**
+     * ISO date strings spanning the week of the user's local "today". Noon UTC
+     * of that calendar day is used so the server snaps to the right week in any
+     * server timezone.
+     */
+    private userWeekRange(userTimezone: string): { start: string; end: string } {
+        const local = this.getNowInUserTimezone(userTimezone);
+        const day = local.getDay(); // 0=Sun..6=Sat
+        const monday = new Date(
+            Date.UTC(
+                local.getFullYear(),
+                local.getMonth(),
+                local.getDate() - (day === 0 ? 6 : day - 1),
+                12,
+            ),
+        );
+        const sunday = new Date(monday.getTime() + 6 * 24 * 60 * 60 * 1000);
+        return { start: monday.toISOString(), end: sunday.toISOString() };
     }
 
     // Create a notification (with robust deduplication)
@@ -308,7 +331,8 @@ export class NotificationService {
                     console.error('Failed to send push to device:', error);
 
                     // If subscription is invalid, mark it as inactive
-                    if (error.statusCode === 410 || error.statusCode === 413) {
+                    // 404/410: the push service no longer knows this subscription
+                    if (error.statusCode === 404 || error.statusCode === 410) {
                         await (prisma as any).notificationSubscription.update({
                             where: { id: sub.id },
                             data: { active: false },
@@ -325,16 +349,14 @@ export class NotificationService {
 
             await Promise.allSettled(pushPromises);
 
-            // Mark notification as sent
-            await (prisma as any).notification.updateMany({
-                where: {
-                    userId: data.userId,
-                    type: data.type,
-                    title: data.title,
-                    sent: false,
-                },
-                data: { sent: true },
-            });
+            // Mark this notification as sent (previously matched by type+title,
+            // which flagged unrelated notifications with the same title too)
+            if (data.notificationId) {
+                await (prisma as any).notification.updateMany({
+                    where: { id: data.notificationId, userId: data.userId },
+                    data: { sent: true },
+                });
+            }
 
             console.log(
                 `Push notification sent to ${subscriptions.length} devices for user ${data.userId}`,
@@ -433,25 +455,6 @@ export class NotificationService {
                 return;
             }
 
-            // Compute current ISO week range
-            const now = new Date();
-            const startOfISOWeek = (d: Date) => {
-                const nd = new Date(d);
-                nd.setHours(0, 0, 0, 0);
-                const day = nd.getDay(); // 0=Sun..6=Sat
-                const diff = day === 0 ? -6 : 1 - day; // shift to Monday
-                nd.setDate(nd.getDate() + diff);
-                return nd;
-            };
-            const endOfISOWeek = (d: Date) => {
-                const start = startOfISOWeek(d);
-                const end = new Date(start);
-                end.setDate(start.getDate() + 6);
-                end.setHours(23, 59, 59, 999);
-                return end;
-            };
-            const s = startOfISOWeek(now).toISOString();
-            const e = endOfISOWeek(now).toISOString();
 
             // Refresh cache for users who either enabled push (for upcoming) OR timetable change notifications
             const usersToRefresh = await (prisma as any).user.findMany({
@@ -478,6 +481,11 @@ export class NotificationService {
             for (const user of usersToRefresh) {
                 let tmpUser = user as any;
                 try {
+                    // The week must be the one containing the user's local today;
+                    // around Sunday midnight the server's (UTC) week is still the old one
+                    const { start: s, end: e } = this.userWeekRange(
+                        user.timezone || 'Europe/Berlin',
+                    );
                     const fresh = await getOrFetchTimetableRange({
                         requesterId: user.id,
                         targetUserId: user.id,
@@ -996,7 +1004,7 @@ export class NotificationService {
                                 irregularDetails: irregularParts,
                             },
                             // auto-expire shortly after start time
-                            expiresAt: new Date(now.getTime() + 60 * 60 * 1000),
+                            expiresAt: new Date(Date.now() + 60 * 60 * 1000),
                             dedupeKey: dedupeKeyPreview,
                         });
                     } else {
@@ -1116,7 +1124,7 @@ export class NotificationService {
                                 irregularDetails: irregularParts,
                             },
                             // auto-expire shortly after start time of last lesson
-                            expiresAt: new Date(now.getTime() + 60 * 60 * 1000),
+                            expiresAt: new Date(Date.now() + 60 * 60 * 1000),
                             dedupeKey,
                         });
                     }
@@ -1144,7 +1152,16 @@ export class NotificationService {
                 },
                 include: {
                     notificationSettings: true,
-                    timetables: { orderBy: { createdAt: 'desc' }, take: 1 },
+                    // Newest cached timetable that covers "now". The newest row overall
+                    // is often a prefetched adjacent week, which forced a refetch every run.
+                    timetables: {
+                        where: {
+                            rangeStart: { lte: new Date() },
+                            rangeEnd: { gte: new Date() },
+                        },
+                        orderBy: { createdAt: 'desc' },
+                        take: 1,
+                    },
                 },
             });
 
@@ -1249,24 +1266,7 @@ export class NotificationService {
 
         console.log('Starting notification service...');
 
-        // Get fetch interval from admin settings
-        const adminSettings = await (
-            prisma as any
-        ).adminNotificationSettings.findFirst();
-        const intervalMinutes = adminSettings?.timetableFetchInterval || 30;
-
-        this.intervalId = setInterval(
-            async () => {
-                if (this.isCheckingChanges) return;
-                this.isCheckingChanges = true;
-                try {
-                    await this.checkTimetableChanges();
-                } finally {
-                    this.isCheckingChanges = false;
-                }
-            },
-            intervalMinutes * 60 * 1000,
-        ); // Convert minutes to milliseconds
+        const intervalMinutes = await this.scheduleTimetableCheck();
 
         // Separate fast loop for upcoming lesson reminders (runs every 60s)
         if (!this.upcomingIntervalId) {
@@ -1296,17 +1296,47 @@ export class NotificationService {
                     } finally {
                         this.isCheckingAbsences = false;
                     }
+                    // Upcoming reminders create a row per lesson; drop expired ones
+                    await this.cleanupExpiredNotifications();
                 },
                 60 * 60 * 1000,
             );
         }
 
-        // Run first absence check after a short delay
-        setTimeout(() => this.checkAbsenceChanges(), 15000);
+        // Run first absence check and cleanup after a short delay
+        setTimeout(() => {
+            void this.checkAbsenceChanges();
+            void this.cleanupExpiredNotifications();
+        }, 15000);
 
         console.log(
             `Notification service started with ${intervalMinutes} minute interval`,
         );
+    }
+
+    /**
+     * (Re)start the timetable-change loop with the admin-configured interval.
+     * Called on startup and whenever the admin changes the interval.
+     */
+    async scheduleTimetableCheck(): Promise<number> {
+        const adminSettings = await (
+            prisma as any
+        ).adminNotificationSettings.findFirst();
+        const intervalMinutes = adminSettings?.timetableFetchInterval || 30;
+        if (this.intervalId) clearInterval(this.intervalId);
+        this.intervalId = setInterval(
+            async () => {
+                if (this.isCheckingChanges) return;
+                this.isCheckingChanges = true;
+                try {
+                    await this.checkTimetableChanges();
+                } finally {
+                    this.isCheckingChanges = false;
+                }
+            },
+            intervalMinutes * 60 * 1000,
+        );
+        return intervalMinutes;
     }
 
     // Stop the background notification service
@@ -1394,6 +1424,13 @@ export class NotificationService {
                         },
                     });
 
+                    const recentCutoff = new Date(
+                        now.getTime() - NEW_ABSENCE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
+                    );
+                    const recentCutoffInt = parseInt(
+                        recentCutoff.toISOString().slice(0, 10).replace(/-/g, ''),
+                    );
+
                     const existingMap = new Map(
                         existingAbsences.map((a: any) => [a.untisId, a]),
                     );
@@ -1402,6 +1439,10 @@ export class NotificationService {
                         const existing = existingMap.get(fresh.id) as any;
 
                         if (!existing) {
+                            // Only announce recently recorded absences. On the first sync
+                            // (nothing stored yet) every past absence would otherwise
+                            // arrive as a burst of "new absence" notifications.
+                            if (fresh.startDate < recentCutoffInt) continue;
                             // New absence
                             const dateStr = this.formatAbsenceDate(
                                 fresh.startDate,

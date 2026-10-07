@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { adminOrUserManagerOnly } from '../server/authMiddleware.js';
 import { prisma } from '../store/prisma.js';
@@ -18,10 +18,35 @@ router.get('/users', adminOrUserManagerOnly, async (_req, res) => {
     res.json({ users });
 });
 
+/**
+ * User managers manage regular users only. Other user managers can only be
+ * changed by the admin, who is also the only one able to grant or revoke the role.
+ * Returns false (and responds) when the target is off-limits.
+ */
+async function ensureCanManage(
+    req: Request,
+    res: Response,
+    targetId: string,
+): Promise<boolean> {
+    if (req.user?.isAdmin || targetId === req.user?.id) return true;
+    const target = await prisma.user.findUnique({
+        where: { id: targetId },
+        select: { isUserManager: true },
+    });
+    if (target?.isUserManager) {
+        res.status(403).json({
+            error: 'Only the admin can modify other user managers',
+        });
+        return false;
+    }
+    return true;
+}
+
 // Delete user by id - accessible by admin or user-manager
 router.delete('/users/:id', adminOrUserManagerOnly, async (req, res) => {
     const id = req.params.id;
     if (!id) return res.status(400).json({ error: 'Missing id' });
+    if (!(await ensureCanManage(req, res, id))) return;
     try {
         const result = await (prisma as any).user.deleteMany({ where: { id } });
         if (result.count === 0)
@@ -41,6 +66,7 @@ router.patch('/users/:id', adminOrUserManagerOnly, async (req, res) => {
     if (!parsed.success) {
         return res.status(400).json({ error: parsed.error.flatten() });
     }
+    if (!(await ensureCanManage(req, res, id))) return;
 
     try {
         const user = await (prisma as any).user.update({

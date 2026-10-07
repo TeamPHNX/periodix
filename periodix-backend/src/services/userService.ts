@@ -17,9 +17,22 @@ export async function createUserIfNotExists(input: {
         where: { username: normalizedUsername },
         select: { id: true },
     });
-    if (existing) return existing;
     const hashed = await hashPassword(input.password);
     const enc = encryptSecret(input.password);
+    if (existing) {
+        // Only reached after Untis accepted this password while the stored hash
+        // did not match, i.e. the Untis password changed. Keep both in sync,
+        // otherwise every background fetch keeps using the old credential.
+        return (prisma as any).user.update({
+            where: { id: existing.id },
+            data: {
+                hashedPassword: hashed,
+                untisSecretCiphertext: enc.ciphertext,
+                untisSecretNonce: enc.nonce,
+                untisSecretKeyVersion: enc.keyVersion,
+            },
+        });
+    }
     return (prisma as any).user.create({
         data: {
             username: normalizedUsername,

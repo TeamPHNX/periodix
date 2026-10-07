@@ -26,6 +26,8 @@ model User {
   timezone                  String                     @default("Europe/Berlin")
   hiddenSubjects            Json?
   onboardingCompleted       Boolean                    @default(false)
+  classesSyncedAt           DateTime?
+  classMemberships          UserClassMembership[]
   exams                     Exam[]
   homework                  Homework[]
   absences                  Absence[]
@@ -62,6 +64,19 @@ model ClassTimetableCache {
 
   @@index([classId, createdAt])
   @@index([classId, rangeStart, rangeEnd, createdAt])
+}
+
+// Which Untis classes a user belongs to. Persisted so the resource overview
+// can pick one representative account per class without logging everyone in.
+model UserClassMembership {
+  userId    String
+  classId   Int
+  className String
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, classId])
+  @@index([classId])
 }
 
 model SessionToken {

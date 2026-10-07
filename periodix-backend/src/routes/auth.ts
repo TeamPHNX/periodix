@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import { z } from 'zod';
 import {
     createUserIfNotExists,
@@ -14,11 +15,23 @@ import { signToken, authMiddleware } from '../server/authMiddleware.js';
 import { untisUserLimiter } from '../server/untisRateLimiter.js';
 import { prisma } from '../store/prisma.js';
 import {
+    clearLoginFailures,
+    loginRetryAfterSeconds,
+    recordLoginFailure,
+} from '../server/loginThrottle.js';
+import {
     trackActivity,
     type TrackingData,
 } from '../services/analytics/index.js';
 
 const router = Router();
+
+// Constant-time comparison so response timing doesn't leak the admin password
+function safeEqual(a: string, b: string): boolean {
+    const ha = crypto.createHash('sha256').update(a).digest();
+    const hb = crypto.createHash('sha256').update(b).digest();
+    return crypto.timingSafeEqual(ha, hb);
+}
 
 const loginSchema = z.object({
     username: z.string().min(1),
@@ -30,13 +43,27 @@ router.post('/login', untisUserLimiter, async (req, res) => {
     if (!parsed.success) {
         return res.status(400).json({ error: parsed.error.flatten() });
     }
+    const ip = req.ip;
+    const retryAfter = loginRetryAfterSeconds(parsed.data.username, ip);
+    if (retryAfter > 0) {
+        res.setHeader('Retry-After', String(retryAfter));
+        return res.status(429).json({
+            error: 'Too many failed login attempts. Please try again later.',
+            retryAfter,
+        });
+    }
+
     // Admin login via env credentials
     if (
         ADMIN_USERNAME &&
         ADMIN_PASSWORD &&
-        parsed.data.username === ADMIN_USERNAME &&
-        parsed.data.password === ADMIN_PASSWORD
+        parsed.data.username === ADMIN_USERNAME
     ) {
+        if (!safeEqual(parsed.data.password, ADMIN_PASSWORD)) {
+            recordLoginFailure(parsed.data.username, ip);
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        clearLoginFailures(parsed.data.username);
         const token = signToken({ userId: 'admin', isAdmin: true });
 
         // Track admin login activity
@@ -68,6 +95,7 @@ router.post('/login', untisUserLimiter, async (req, res) => {
     // Try to find existing user first
     const existingUser = await findUserByCredentials({ ...parsed.data });
     if (existingUser) {
+        clearLoginFailures(parsed.data.username);
         const token = signToken({ userId: existingUser.id });
 
         // Track login activity for existing user
@@ -105,6 +133,8 @@ router.post('/login', untisUserLimiter, async (req, res) => {
         );
     } catch (e: any) {
         const status = e?.status || 401;
+        // Only wrong credentials count; Untis outages must not lock people out
+        if (status === 401) recordLoginFailure(parsed.data.username, ip);
         return res.status(status).json({
             error: e?.message || 'Invalid credentials',
             code: e?.code,
@@ -149,6 +179,7 @@ router.post('/login', untisUserLimiter, async (req, res) => {
     }
 
     // Create user with Untis credentials
+    clearLoginFailures(parsed.data.username);
     const user = await createUserIfNotExists({ ...parsed.data });
     const token = signToken({ userId: user.id });
 

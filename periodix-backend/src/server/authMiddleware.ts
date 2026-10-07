@@ -21,6 +21,21 @@ export function signToken(payload: AuthPayload) {
     return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 }
 
+// Sliding expiry: hand out a fresh token only once the current one is a day
+// old. Refreshing on every request made every response carry a new token,
+// and the frontend re-ran all token-dependent effects each time.
+const TOKEN_REFRESH_AFTER_SECONDS = 24 * 60 * 60;
+
+function refreshTokenIfOld(
+    res: Response,
+    decoded: AuthPayload & { iat?: number },
+    payload: AuthPayload,
+) {
+    const ageSeconds = Math.floor(Date.now() / 1000) - (decoded.iat ?? 0);
+    if (ageSeconds < TOKEN_REFRESH_AFTER_SECONDS) return;
+    res.setHeader('X-Refreshed-Token', signToken(payload));
+}
+
 export async function authMiddleware(
     req: Request,
     res: Response,
@@ -31,16 +46,16 @@ export async function authMiddleware(
         return res.status(401).json({ error: 'Missing auth token' });
     const token = auth.slice('Bearer '.length);
     try {
-        const decoded = jwt.verify(token, JWT_SECRET) as AuthPayload;
+        const decoded = jwt.verify(token, JWT_SECRET) as AuthPayload & {
+            iat?: number;
+        };
         // Allow admin tokens (no DB row) and regular user tokens (validate in DB)
         if (decoded.isAdmin) {
             (req.user as any) = { id: decoded.userId, isAdmin: true };
-            // Issue refreshed token for admin
-            const refreshedToken = signToken({
+            refreshTokenIfOld(res, decoded, {
                 userId: decoded.userId,
                 isAdmin: true,
             });
-            res.setHeader('X-Refreshed-Token', refreshedToken);
             return next();
         }
         const user = await prisma.user.findUnique({
@@ -55,12 +70,10 @@ export async function authMiddleware(
             return res.status(401).json({ error: 'Invalid token' });
         }
         (req.user as any) = { id: user.id, isUserManager: user.isUserManager };
-        // Issue refreshed token for regular user
-        const refreshedToken = signToken({
+        refreshTokenIfOld(res, decoded, {
             userId: user.id,
             isUserManager: user.isUserManager,
         });
-        res.setHeader('X-Refreshed-Token', refreshedToken);
         return next();
     } catch (error) {
         // Log investigation details for JWT verification failures
@@ -79,15 +92,15 @@ export function adminOnly(req: Request, res: Response, next: NextFunction) {
         return res.status(401).json({ error: 'Missing auth token' });
     const token = auth.slice('Bearer '.length);
     try {
-        const decoded = jwt.verify(token, JWT_SECRET) as AuthPayload;
+        const decoded = jwt.verify(token, JWT_SECRET) as AuthPayload & {
+            iat?: number;
+        };
         if (!decoded.isAdmin)
             return res.status(403).json({ error: 'Admin required' });
-        // Issue refreshed token for admin
-        const refreshedToken = signToken({
+        refreshTokenIfOld(res, decoded, {
             userId: decoded.userId,
             isAdmin: true,
         });
-        res.setHeader('X-Refreshed-Token', refreshedToken);
         return next();
     } catch (error) {
         // Log investigation details for adminOnly JWT verification failures
@@ -110,17 +123,17 @@ export async function adminOrUserManagerOnly(
         return res.status(401).json({ error: 'Missing auth token' });
     const token = auth.slice('Bearer '.length);
     try {
-        const decoded = jwt.verify(token, JWT_SECRET) as AuthPayload;
+        const decoded = jwt.verify(token, JWT_SECRET) as AuthPayload & {
+            iat?: number;
+        };
 
         // Admin always has access
         if (decoded.isAdmin) {
             (req.user as any) = { id: decoded.userId, isAdmin: true };
-            // Issue refreshed token for admin
-            const refreshedToken = signToken({
+            refreshTokenIfOld(res, decoded, {
                 userId: decoded.userId,
                 isAdmin: true,
             });
-            res.setHeader('X-Refreshed-Token', refreshedToken);
             return next();
         }
 
@@ -145,12 +158,10 @@ export async function adminOrUserManagerOnly(
         }
 
         (req.user as any) = { id: user.id, isUserManager: user.isUserManager };
-        // Issue refreshed token for user manager
-        const refreshedToken = signToken({
+        refreshTokenIfOld(res, decoded, {
             userId: user.id,
             isUserManager: user.isUserManager,
         });
-        res.setHeader('X-Refreshed-Token', refreshedToken);
         return next();
     } catch (error) {
         // Log investigation details for adminOrUserManagerOnly JWT verification failures

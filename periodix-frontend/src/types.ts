@@ -31,6 +31,7 @@ export type Lesson = {
     date: number; // yyyymmdd
     startTime: number; // Untis HHmm integer, e.g., 740 => 07:40
     endTime: number; // Untis HHmm integer, e.g., 825 => 08:25
+    kl?: Array<{ id: number; name: string; longname?: string }>; // classes
     su?: Array<{ id: number; name: string; longname?: string }>;
     te?: Array<{
         id: number;
@@ -50,6 +51,76 @@ export type Lesson = {
     lstext?: string; // Additional lesson text (notes)
     homework?: Homework[]; // Associated homework
     exams?: Exam[]; // Associated exams
+};
+
+// --- Resource overview (user managers / admin) ---------------------------
+
+export type ResourceType = 'teacher' | 'room';
+
+export type ResourceSummary = {
+    id: number;
+    name: string; // short name, e.g. "ALB" or "A2.11 B"
+    longName: string;
+    lessonCount: number; // non-cancelled lessons in the week
+};
+
+export type ClassCoverageStatus =
+    | 'fresh'
+    | 'stale'
+    | 'missing'
+    | 'no-account'
+    | 'failed';
+
+export type ResourceRefreshJob = {
+    week: string;
+    state: 'running' | 'done';
+    phase: 'discovering' | 'fetching' | 'done';
+    trigger: 'auto' | 'manual';
+    startedAt: string;
+    finishedAt: string | null;
+    total: number;
+    completed: number;
+    failed: number;
+};
+
+export type ResourceIndexResponse = {
+    week: { key: string; start: string; end: string };
+    lastUpdated: string | null;
+    coverage: {
+        total: number;
+        withData: number;
+        classes: Array<{
+            id: number;
+            name: string;
+            longName: string;
+            status: ClassCoverageStatus;
+            lastUpdated: string | null;
+            error?: string;
+        }>;
+    };
+    teachers: ResourceSummary[];
+    rooms: ResourceSummary[];
+    job: ResourceRefreshJob | null;
+};
+
+export type FreeRoomSlotState = 'free' | 'busy' | 'shared' | 'conflict';
+
+export type FreeRoomsResponse = {
+    date: number; // yyyymmdd
+    periods: Array<{ name: string; startTime: number; endTime: number }>;
+    rooms: Array<{
+        id: number;
+        name: string;
+        longName: string;
+        slots: Array<{
+            state: FreeRoomSlotState;
+            lessons: Array<{
+                subject: string;
+                classes: string[];
+                teachers: string[];
+            }>;
+        }>;
+    }>;
 };
 
 export type Homework = {

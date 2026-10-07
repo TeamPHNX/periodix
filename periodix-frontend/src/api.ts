@@ -12,6 +12,10 @@ import type {
     Holiday,
     TimetableResponse,
     AbsenceResponse,
+    ResourceIndexResponse,
+    ResourceRefreshJob,
+    ResourceType,
+    FreeRoomsResponse,
 } from './types';
 
 // Global logout handler - will be set by App.tsx
@@ -1006,4 +1010,58 @@ export async function getAbsentLessons(
     const query = params.toString();
     const url = `/api/timetable/absences${query ? `?${query}` : ''}`;
     return api<AbsenceResponse>(url, { token });
+}
+
+export async function getResourceIndex(
+    token: string,
+    week: string
+): Promise<ResourceIndexResponse> {
+    const params = new URLSearchParams({ week });
+    return api<ResourceIndexResponse>(`/api/resources/index?${params}`, {
+        token,
+    });
+}
+
+export async function getResourceTimetable(
+    token: string,
+    type: ResourceType,
+    id: number,
+    week: string
+): Promise<TimetableResponse> {
+    const params = new URLSearchParams({ type, id: String(id), week });
+    return api<TimetableResponse>(`/api/resources/timetable?${params}`, {
+        token,
+    });
+}
+
+export async function getFreeRooms(
+    token: string,
+    date: string
+): Promise<FreeRoomsResponse> {
+    const params = new URLSearchParams({ date });
+    return api<FreeRoomsResponse>(`/api/resources/free-rooms?${params}`, {
+        token,
+    });
+}
+
+export async function refreshResources(
+    token: string,
+    week: string
+): Promise<{ job: ResourceRefreshJob }> {
+    return api<{ job: ResourceRefreshJob }>('/api/resources/refresh', {
+        token,
+        method: 'POST',
+        body: JSON.stringify({ week }),
+    });
+}
+
+export async function getResourceRefreshStatus(
+    token: string,
+    week: string
+): Promise<{ job: ResourceRefreshJob | null }> {
+    const params = new URLSearchParams({ week });
+    return api<{ job: ResourceRefreshJob | null }>(
+        `/api/resources/refresh/status?${params}`,
+        { token }
+    );
 }
