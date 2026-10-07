@@ -44,8 +44,10 @@ async function ensureCanManage(
 
 // Delete user by id - accessible by admin or user-manager
 router.delete('/users/:id', adminOrUserManagerOnly, async (req, res) => {
-    const id = req.params.id;
-    if (!id) return res.status(400).json({ error: 'Missing id' });
+    const idRaw = req.params.id;
+    if (!idRaw) return res.status(400).json({ error: 'Missing id' });
+    if (Array.isArray(idRaw)) return res.status(400).json({ error: 'Invalid id' });
+    const id = idRaw;
     if (!(await ensureCanManage(req, res, id))) return;
     try {
         const result = await (prisma as any).user.deleteMany({ where: { id } });
@@ -59,8 +61,10 @@ router.delete('/users/:id', adminOrUserManagerOnly, async (req, res) => {
 
 // Update user display name - accessible by admin or user-manager
 router.patch('/users/:id', adminOrUserManagerOnly, async (req, res) => {
-    const id = req.params.id;
-    if (!id) return res.status(400).json({ error: 'Missing id' });
+    const idRaw = req.params.id;
+    if (!idRaw) return res.status(400).json({ error: 'Missing id' });
+    if (Array.isArray(idRaw)) return res.status(400).json({ error: 'Invalid id' });
+    const id = idRaw;
 
     const parsed = updateUserSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -120,8 +124,10 @@ router.post('/whitelist', adminOrUserManagerOnly, async (req, res) => {
 
 // Delete a whitelist rule - accessible by admin or user-manager
 router.delete('/whitelist/:id', adminOrUserManagerOnly, async (req, res) => {
-    const id = req.params.id;
-    if (!id) return res.status(400).json({ error: 'Missing id' });
+    const idRaw = req.params.id;
+    if (!idRaw) return res.status(400).json({ error: 'Missing id' });
+    if (Array.isArray(idRaw)) return res.status(400).json({ error: 'Invalid id' });
+    const id = idRaw;
     try {
         const result = await (prisma as any).whitelistRule.deleteMany({
             where: { id },
@@ -150,8 +156,10 @@ router.post(
     '/access-requests/:id/accept',
     adminOrUserManagerOnly,
     async (req, res) => {
-        const id = req.params.id;
-        if (!id) return res.status(400).json({ error: 'Missing id' });
+        const idRaw = req.params.id;
+        if (!idRaw) return res.status(400).json({ error: 'Missing id' });
+        if (Array.isArray(idRaw)) return res.status(400).json({ error: 'Invalid id' });
+        const id = idRaw;
 
         try {
             // Find the access request
@@ -202,8 +210,10 @@ router.delete(
     '/access-requests/:id',
     adminOrUserManagerOnly,
     async (req, res) => {
-        const id = req.params.id;
-        if (!id) return res.status(400).json({ error: 'Missing id' });
+        const idRaw = req.params.id;
+        if (!idRaw) return res.status(400).json({ error: 'Missing id' });
+        if (Array.isArray(idRaw)) return res.status(400).json({ error: 'Invalid id' });
+        const id = idRaw;
 
         try {
             const result = await (prisma as any).accessRequest.deleteMany({

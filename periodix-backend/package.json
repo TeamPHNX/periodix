@@ -21,7 +21,7 @@
         "@prisma/adapter-pg": "^6.19.3",
         "@prisma/client": "^6.19.3",
         "@prisma/config": "^6.19.3",
-        "@teamphnx/sduiapi": "^0.1.5",
+        "@teamphnx/sduiapi": "^0.1.6",
         "argon2": "^0.44.0",
         "cors": "^2.8.5",
         "dotenv": "^17.2.3",
