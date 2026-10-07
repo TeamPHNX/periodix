@@ -46,7 +46,8 @@ async function ensureCanManage(
 router.delete('/users/:id', adminOrUserManagerOnly, async (req, res) => {
     const idRaw = req.params.id;
     if (!idRaw) return res.status(400).json({ error: 'Missing id' });
-    if (Array.isArray(idRaw)) return res.status(400).json({ error: 'Invalid id' });
+    if (Array.isArray(idRaw))
+        return res.status(400).json({ error: 'Invalid id' });
     const id = idRaw;
     if (!(await ensureCanManage(req, res, id))) return;
     try {
@@ -63,7 +64,8 @@ router.delete('/users/:id', adminOrUserManagerOnly, async (req, res) => {
 router.patch('/users/:id', adminOrUserManagerOnly, async (req, res) => {
     const idRaw = req.params.id;
     if (!idRaw) return res.status(400).json({ error: 'Missing id' });
-    if (Array.isArray(idRaw)) return res.status(400).json({ error: 'Invalid id' });
+    if (Array.isArray(idRaw))
+        return res.status(400).json({ error: 'Invalid id' });
     const id = idRaw;
 
     const parsed = updateUserSchema.safeParse(req.body);
@@ -126,7 +128,8 @@ router.post('/whitelist', adminOrUserManagerOnly, async (req, res) => {
 router.delete('/whitelist/:id', adminOrUserManagerOnly, async (req, res) => {
     const idRaw = req.params.id;
     if (!idRaw) return res.status(400).json({ error: 'Missing id' });
-    if (Array.isArray(idRaw)) return res.status(400).json({ error: 'Invalid id' });
+    if (Array.isArray(idRaw))
+        return res.status(400).json({ error: 'Invalid id' });
     const id = idRaw;
     try {
         const result = await (prisma as any).whitelistRule.deleteMany({
@@ -158,7 +161,8 @@ router.post(
     async (req, res) => {
         const idRaw = req.params.id;
         if (!idRaw) return res.status(400).json({ error: 'Missing id' });
-        if (Array.isArray(idRaw)) return res.status(400).json({ error: 'Invalid id' });
+        if (Array.isArray(idRaw))
+            return res.status(400).json({ error: 'Invalid id' });
         const id = idRaw;
 
         try {
@@ -212,7 +216,8 @@ router.delete(
     async (req, res) => {
         const idRaw = req.params.id;
         if (!idRaw) return res.status(400).json({ error: 'Missing id' });
-        if (Array.isArray(idRaw)) return res.status(400).json({ error: 'Invalid id' });
+        if (Array.isArray(idRaw))
+            return res.status(400).json({ error: 'Invalid id' });
         const id = idRaw;
 
         try {
