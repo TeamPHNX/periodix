@@ -52,7 +52,6 @@ import {
     getISOWeekNumber,
 } from '../utils/dates';
 import {
-    LayoutGrid,
     Settings,
     Calendar,
     Sun,
@@ -139,13 +138,16 @@ export default function Dashboard({
     } | null>(null);
     const [selectedClass, setSelectedClass] = useState<ClassInfo | null>(null);
 
-    const isClassViewActive = !!(
-        primaryClass && selectedClass?.id === primaryClass.id
-    );
     const [isResourceManagerOpen, setIsResourceManagerOpen] = useState(false);
+    const isClassViewActive = !!(
+        !isResourceManagerOpen &&
+        primaryClass &&
+        selectedClass?.id === primaryClass.id
+    );
     const isHomeViewActive =
         !selectedClass && !selectedUser && !isResourceManagerOpen;
-    const isSearchViewActive = !!selectedUser && selectedUser.id !== user.id;
+    const isSearchViewActive =
+        !isResourceManagerOpen && !!selectedUser && selectedUser.id !== user.id;
 
     const abortRef = useRef<AbortController | null>(null);
     const searchBoxRef = useRef<HTMLDivElement | null>(null);
@@ -837,6 +839,17 @@ export default function Dashboard({
         setMobileSearchOpen(false);
     }, [primaryClass, selectedClass]);
 
+    // The resource manager replaces the timetable view, so leave any class or
+    // search view instead of keeping it selected underneath.
+    const openResourceManager = useCallback(() => {
+        setIsResourceManagerOpen(true);
+        setSelectedClass(null);
+        setSelectedUser(null);
+        setQueryText('');
+        setResults([]);
+        setMobileSearchOpen(false);
+    }, []);
+
     // Load holidays
     useEffect(() => {
         getHolidays(token)
@@ -1487,7 +1500,7 @@ export default function Dashboard({
                         {/* Hamburger menu */}
                         <div className="relative" ref={menuRef}>
                             <button
-                                className={`rounded-full p-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors z-50 relative ${
+                                className={`rounded-full p-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors ${
                                     isMenuOpen
                                         ? 'bg-slate-200 dark:bg-slate-700'
                                         : ''
@@ -1497,113 +1510,86 @@ export default function Dashboard({
                                 aria-label="Open menu"
                                 aria-expanded={isMenuOpen}
                             >
-                                {isMenuOpen ? (
-                                    <svg className="h-5 w-5 text-slate-600 dark:text-slate-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-                                ) : (
-                                    <LayoutGrid className="h-5 w-5 text-slate-600 dark:text-slate-300" />
-                                )}
+                                <svg
+                                    className="h-5 w-5 text-slate-600 dark:text-slate-300 transition-transform duration-200"
+                                    style={{
+                                        transform: isMenuOpen
+                                            ? 'rotate(90deg)'
+                                            : 'rotate(0deg)',
+                                    }}
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                >
+                                    <line x1="3" y1="6" x2="21" y2="6" />
+                                    <line x1="3" y1="12" x2="21" y2="12" />
+                                    <line x1="3" y1="18" x2="21" y2="18" />
+                                </svg>
                             </button>
-
-                            {/* Mobile backdrop */}
-                            {isMenuOpen && (
-                                <div 
-                                    className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm sm:hidden z-40 transition-opacity"
-                                    onClick={() => setIsMenuOpen(false)}
-                                />
-                            )}
-
-                            {/* Menu content */}
+                            {/* Dropdown menu. Must stay `absolute`: the header's
+                                backdrop-filter traps `fixed` children inside it. */}
                             <div
-                                className={`fixed sm:absolute inset-0 sm:inset-auto sm:right-0 sm:mt-2 sm:w-64 sm:rounded-xl bg-white dark:bg-slate-800 shadow-2xl sm:shadow-lg sm:border border-slate-200 dark:border-slate-700 overflow-hidden transition-all duration-300 ease-in-out origin-top-right z-50 ${
+                                className={`absolute right-0 mt-2 w-56 rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-800 overflow-hidden transition-all duration-200 ease-out origin-top-right z-50 ${
                                     isMenuOpen
-                                        ? 'opacity-100 scale-100 pointer-events-auto'
-                                        : 'opacity-0 scale-95 sm:scale-100 sm:-translate-y-2 pointer-events-none'
+                                        ? 'opacity-100 scale-100 translate-y-0'
+                                        : 'opacity-0 scale-95 -translate-y-2 pointer-events-none'
                                 }`}
                             >
-                                <div className="flex flex-col h-full">
-                                    {/* Mobile Header */}
-                                    <div className="flex sm:hidden items-center justify-between p-6 bg-slate-50 dark:bg-slate-900/50 border-b dark:border-slate-700">
-                                        <div>
-                                            <div className="font-bold text-xl dark:text-white">Menu</div>
-                                            <div className="text-sm text-slate-500">{user.username}</div>
-                                        </div>
-                                        <button 
-                                            onClick={() => setIsMenuOpen(false)}
-                                            className="p-2 rounded-full hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500"
-                                        >
-                                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-                                        </button>
-                                    </div>
-
-                                    <div className="p-2 sm:py-1 space-y-1 flex-1 overflow-y-auto">
-                                        {(user.isUserManager || user.isAdmin) && (
-                                            <div className="mb-2 sm:mb-1 px-2 pt-2 pb-1 sm:p-0">
-                                                <div className="px-2 pb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 sm:hidden">Admin</div>
-                                                <button
-                                                    className="w-full flex items-center gap-3 px-4 py-4 sm:py-2.5 text-left text-base sm:text-sm font-medium sm:font-normal rounded-lg text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-900/20 transition-colors"
-                                                    onClick={() => {
-                                                        setIsMenuOpen(false);
-                                                        setIsResourceManagerOpen(true);
-                                                    }}
-                                                >
-                                                    <LayoutGrid className="w-5 h-5 sm:w-4 sm:h-4" />
-                                                    Resource Manager
-                                                </button>
-                                            </div>
+                                <div className="py-1">
+                                    <button
+                                        className="w-full flex items-center gap-3 px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                                        onClick={() => {
+                                            setIsMenuOpen(false);
+                                            setIsSettingsModalOpen(true);
+                                            trackActivity(
+                                                token,
+                                                'settings',
+                                            ).catch(console.error);
+                                        }}
+                                    >
+                                        <Settings className="h-[18px] w-[18px] text-slate-500 dark:text-slate-400" />
+                                        Settings
+                                    </button>
+                                    <button
+                                        className="w-full flex items-center gap-3 px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                                        onClick={() => {
+                                            setIsMenuOpen(false);
+                                            setIsAbsencePanelOpen(
+                                                !isAbsencePanelOpen,
+                                            );
+                                        }}
+                                    >
+                                        <Calendar className="h-[18px] w-[18px] text-slate-500 dark:text-slate-400" />
+                                        Absences
+                                    </button>
+                                    <button
+                                        className="w-full flex items-center gap-3 px-4 py-3 text-left text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                                        onClick={() => {
+                                            setDark(!dark);
+                                            setIsMenuOpen(false);
+                                        }}
+                                    >
+                                        {dark ? (
+                                            <Sun className="h-[18px] w-[18px] text-amber-500" />
+                                        ) : (
+                                            <Moon className="h-[18px] w-[18px] text-indigo-500" />
                                         )}
-
-                                        <div className="px-2 pb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 sm:hidden">Settings</div>
-                                        <button
-                                            className="w-full flex items-center gap-3 px-4 py-4 sm:py-2.5 text-left text-base sm:text-sm text-slate-700 dark:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                                            onClick={() => {
-                                                setIsMenuOpen(false);
-                                                setIsSettingsModalOpen(true);
-                                                trackActivity(token, 'settings').catch(console.error);
-                                            }}
-                                        >
-                                            <Settings className="w-5 h-5 sm:w-4 sm:h-4 text-slate-500 dark:text-slate-400" />
-                                            Settings
-                                        </button>
-
-                                        <button
-                                            className="w-full flex items-center gap-3 px-4 py-4 sm:py-2.5 text-left text-base sm:text-sm text-slate-700 dark:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                                            onClick={() => {
-                                                setIsMenuOpen(false);
-                                                setIsAbsencePanelOpen(!isAbsencePanelOpen);
-                                            }}
-                                        >
-                                            <Calendar className="w-5 h-5 sm:w-4 sm:h-4 text-slate-500 dark:text-slate-400" />
-                                            Absences
-                                        </button>
-
-                                        <button
-                                            className="w-full flex items-center gap-3 px-4 py-4 sm:py-2.5 text-left text-base sm:text-sm text-slate-700 dark:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-                                            onClick={() => {
-                                                setDark(!dark);
-                                                setIsMenuOpen(false);
-                                            }}
-                                        >
-                                            {dark ? (
-                                                <Sun className="w-5 h-5 sm:w-4 sm:h-4 text-amber-500" />
-                                            ) : (
-                                                <Moon className="w-5 h-5 sm:w-4 sm:h-4 text-indigo-500" />
-                                            )}
-                                            {dark ? 'Light Mode' : 'Dark Mode'}
-                                        </button>
-
-                                        <div className="pt-2 mt-2 border-t dark:border-slate-700">
-                                            <button
-                                                className="w-full flex items-center gap-3 px-4 py-4 sm:py-2.5 text-left text-base sm:text-sm text-rose-600 dark:text-rose-400 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-colors"
-                                                onClick={() => {
-                                                    setIsMenuOpen(false);
-                                                    onLogout();
-                                                }}
-                                            >
-                                                <LogOut className="w-5 h-5 sm:w-4 sm:h-4" />
-                                                Logout
-                                            </button>
-                                        </div>
-                                    </div>
+                                        {dark ? 'Light mode' : 'Dark mode'}
+                                    </button>
+                                    <div className="my-1 border-t border-slate-200 dark:border-slate-700" />
+                                    <button
+                                        className="w-full flex items-center gap-3 px-4 py-3 text-left text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                                        onClick={() => {
+                                            setIsMenuOpen(false);
+                                            onLogout();
+                                        }}
+                                    >
+                                        <LogOut className="h-[18px] w-[18px]" />
+                                        Log out
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -1730,6 +1716,9 @@ export default function Dashboard({
                                                             <button
                                                                 className="w-full px-3 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-700"
                                                                 onClick={() => {
+                                                                    setIsResourceManagerOpen(
+                                                                        false,
+                                                                    );
                                                                     setSelectedUser(
                                                                         r,
                                                                     );
@@ -1853,9 +1842,7 @@ export default function Dashboard({
                                             }`}
                                             title="Resource Manager"
                                             aria-label="Open Resource Manager"
-                                            onClick={() => {
-                                                setIsResourceManagerOpen(true);
-                                            }}
+                                            onClick={openResourceManager}
                                         >
                                             <svg
                                                 xmlns="http://www.w3.org/2000/svg"
@@ -1967,6 +1954,39 @@ export default function Dashboard({
                                         <path d="M9 21v-6h6v6" />
                                     </svg>
                                 </button>
+                                {(user.isUserManager || user.isAdmin) && (
+                                    <button
+                                        type="button"
+                                        className={`rounded-full p-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all ${
+                                            isResourceManagerOpen
+                                                ? 'bg-slate-200 dark:bg-slate-700 text-sky-600 dark:text-sky-400 shadow-[0_0_10px_rgba(14,165,233,0.5)] dark:shadow-[0_0_10px_rgba(56,189,248,0.4)]'
+                                                : 'text-slate-600 dark:text-slate-300'
+                                        }`}
+                                        title="Resource Manager"
+                                        aria-label="Open Resource Manager"
+                                        onClick={openResourceManager}
+                                    >
+                                        <svg
+                                            xmlns="http://www.w3.org/2000/svg"
+                                            width="20"
+                                            height="20"
+                                            viewBox="0 0 24 24"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="2"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                        >
+                                            <path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z" />
+                                            <path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" />
+                                            <path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2" />
+                                            <path d="M10 6h4" />
+                                            <path d="M10 10h4" />
+                                            <path d="M10 14h4" />
+                                            <path d="M10 18h4" />
+                                        </svg>
+                                    </button>
+                                )}
                             </div>
                             {/* Week picker with calendar week display */}
                             <div className="flex items-end gap-3 ml-auto week-picker-right-gap">
@@ -2351,6 +2371,9 @@ export default function Dashboard({
                                             <button
                                                 className="w-full rounded-xl p-4 text-left bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/50 dark:hover:bg-slate-800 border border-slate-200/60 dark:border-slate-700/60 hover:border-slate-300 dark:hover:border-slate-600 transition-all duration-200 shadow-sm hover:shadow-md group"
                                                 onClick={() => {
+                                                    setIsResourceManagerOpen(
+                                                        false,
+                                                    );
                                                     setSelectedUser(r);
                                                     setSelectedClass(null);
                                                     setQueryText('');
