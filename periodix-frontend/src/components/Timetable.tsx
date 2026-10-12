@@ -63,6 +63,28 @@ declare global {
     }
 }
 
+// Teacher / room overview: lesson blocks show the classes instead of the
+// teacher (teacher view) or room (room view), which is already known
+function toResourceView(
+    raw: TimetableResponse | null,
+    resourceView: 'teacher' | 'room' | undefined,
+): TimetableResponse | null {
+    if (!resourceView || !raw || !Array.isArray(raw.payload)) return raw;
+    return {
+        ...raw,
+        payload: (raw.payload as Lesson[]).map((l) => {
+            const classes = (l.kl ?? []).map((k) => ({
+                id: k.id,
+                name: k.name,
+                longname: k.longname,
+            }));
+            return resourceView === 'teacher'
+                ? { ...l, te: classes }
+                : { ...l, ro: classes };
+        }),
+    };
+}
+
 export default function Timetable({
     data: rawData,
     holidays = [],
@@ -118,24 +140,10 @@ export default function Timetable({
         }
         return map;
     }, [rawData?.payload, resourceView]);
-    const data = useMemo<TimetableResponse | null>(() => {
-        if (!resourceView || !rawData || !Array.isArray(rawData.payload)) {
-            return rawData;
-        }
-        return {
-            ...rawData,
-            payload: (rawData.payload as Lesson[]).map((l) => {
-                const classes = (l.kl ?? []).map((k) => ({
-                    id: k.id,
-                    name: k.name,
-                    longname: k.longname,
-                }));
-                return resourceView === 'teacher'
-                    ? { ...l, te: classes }
-                    : { ...l, ro: classes };
-            }),
-        };
-    }, [rawData, resourceView]);
+    const data = useMemo(
+        () => toResourceView(rawData, resourceView),
+        [rawData, resourceView],
+    );
     // The modal should show the real teacher / room again
     const withOriginalPeople = (lesson: Lesson): Lesson => {
         const original = resourceOriginals.get(lesson.id);
@@ -1560,7 +1568,12 @@ export default function Timetable({
         const byDay: Record<string, Lesson[]> = {};
         for (const d of prevWeekDays) byDay[fmtLocal(d)] = [];
 
-        const prevWeekData = getAdjacentWeekData?.('prev');
+        // Same lesson shape as the current week, so nothing changes when a
+        // swipe lands and this pane becomes the current one
+        const prevWeekData = toResourceView(
+            getAdjacentWeekData?.('prev') ?? null,
+            resourceView,
+        );
         const lessons = Array.isArray(prevWeekData?.payload)
             ? (prevWeekData?.payload as Lesson[])
             : [];
@@ -1585,7 +1598,7 @@ export default function Timetable({
             byDay[k] = mergeLessons(byDay[k]);
         }
         return byDay;
-    }, [prevWeekDays, getAdjacentWeekData, hiddenBump]);
+    }, [prevWeekDays, getAdjacentWeekData, hiddenBump, resourceView]);
 
     // Process next week's data
     const nextWeekLessonsByDay = useMemo(() => {
@@ -1600,7 +1613,10 @@ export default function Timetable({
         const byDay: Record<string, Lesson[]> = {};
         for (const d of nextWeekDays) byDay[fmtLocal(d)] = [];
 
-        const nextWeekData = getAdjacentWeekData?.('next');
+        const nextWeekData = toResourceView(
+            getAdjacentWeekData?.('next') ?? null,
+            resourceView,
+        );
         const lessons = Array.isArray(nextWeekData?.payload)
             ? (nextWeekData?.payload as Lesson[])
             : [];
@@ -1625,7 +1641,7 @@ export default function Timetable({
             byDay[k] = mergeLessons(byDay[k]);
         }
         return byDay;
-    }, [nextWeekDays, getAdjacentWeekData, hiddenBump]);
+    }, [nextWeekDays, getAdjacentWeekData, hiddenBump, resourceView]);
 
     const hasLessons = useMemo(
         () => Object.values(lessonsByDay).some((arr) => arr.length > 0),

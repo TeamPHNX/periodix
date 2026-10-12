@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type {
+    AbsenceHistoryEntry,
     AbsencePreset,
     AbsenceRecord,
     AbsenceResponse,
@@ -40,6 +41,74 @@ function formatMillisTimestamp(value?: number | null) {
         hour: '2-digit',
         minute: '2-digit',
     });
+}
+
+const HISTORY_FIELD_LABELS: Record<string, string> = {
+    startDate: 'Start date',
+    endDate: 'End date',
+    startTime: 'Start time',
+    endTime: 'End time',
+    reason: 'Reason',
+    isExcused: 'Excused',
+    excuseStatus: 'Status',
+    text: 'Note',
+};
+
+function formatHistoryValue(
+    field: string,
+    value: string | number | boolean | null,
+): string {
+    if (value === null || value === undefined || value === '') return '—';
+    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+    if (typeof value === 'number') {
+        if (field === 'startDate' || field === 'endDate') {
+            return formatUntisDate(value) ?? String(value);
+        }
+        if (field === 'startTime' || field === 'endTime') {
+            return formatUntisTime(value) ?? String(value);
+        }
+    }
+    return String(value);
+}
+
+function AbsenceHistory({ entries }: { entries: AbsenceHistoryEntry[] }) {
+    return (
+        <details className="mt-3 group">
+            <summary className="cursor-pointer select-none text-xs font-medium text-indigo-600 dark:text-indigo-300">
+                Edited {entries.length}{' '}
+                {entries.length === 1 ? 'time' : 'times'}
+            </summary>
+            <ol className="mt-2 space-y-2 border-l border-slate-200 pl-3 dark:border-slate-700">
+                {entries.map((entry, i) => (
+                    <li key={`${entry.editedAt}-${i}`} className="text-xs">
+                        <p className="text-slate-500 dark:text-slate-400">
+                            {formatMillisTimestamp(
+                                new Date(entry.editedAt).getTime(),
+                            )}
+                            {entry.editedBy ? ` · ${entry.editedBy}` : ''}
+                        </p>
+                        <ul className="mt-0.5 text-slate-700 dark:text-slate-200">
+                            {entry.changes.map((c) => (
+                                <li key={c.field}>
+                                    {HISTORY_FIELD_LABELS[c.field] ?? c.field}:{' '}
+                                    <span
+                                        className={`opacity-70 ${
+                                            c.from === null || c.from === ''
+                                                ? ''
+                                                : 'line-through'
+                                        }`}
+                                    >
+                                        {formatHistoryValue(c.field, c.from)}
+                                    </span>{' '}
+                                    → {formatHistoryValue(c.field, c.to)}
+                                </li>
+                            ))}
+                        </ul>
+                    </li>
+                ))}
+            </ol>
+        </details>
+    );
 }
 
 function formatUntisTime(value?: number) {
@@ -452,6 +521,13 @@ export default function AbsencePanel({
                                                 </p>
                                             </div>
                                         )}
+
+                                        {absence.history &&
+                                            absence.history.length > 0 && (
+                                                <AbsenceHistory
+                                                    entries={absence.history}
+                                                />
+                                            )}
 
                                         <div className="mt-3 flex flex-wrap gap-4 text-xs text-slate-500 dark:text-slate-400">
                                             {created && (

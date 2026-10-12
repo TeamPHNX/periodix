@@ -7,7 +7,7 @@ import { ColorCustomization } from './lesson-modal/ColorCustomization';
 import {
     LessonInfoBlocks,
     LessonStatus,
-    LessonInfoMessage,
+    LessonNote,
 } from './lesson-modal/InfoBlocks';
 
 export default function LessonModal({
@@ -333,23 +333,29 @@ export default function LessonModal({
                             />
                             <LessonStatus code={currentLesson.code} />
 
-                            {currentLesson.info && (
-                                <LessonInfoMessage
-                                    title="Lesson Information"
-                                    text={currentLesson.info}
-                                    variant="info"
-                                    cancelled={cancelled}
-                                />
-                            )}
+                            <LessonNote
+                                lesson={currentLesson}
+                                field="substText"
+                                title="Substitution Note"
+                                variant="substitution"
+                                cancelled={cancelled}
+                            />
 
-                            {currentLesson.lstext && (
-                                <LessonInfoMessage
-                                    title="Lesson Notes"
-                                    text={currentLesson.lstext}
-                                    variant="notes"
-                                    cancelled={cancelled}
-                                />
-                            )}
+                            <LessonNote
+                                lesson={currentLesson}
+                                field="info"
+                                title="Lesson Information"
+                                variant="info"
+                                cancelled={cancelled}
+                            />
+
+                            <LessonNote
+                                lesson={currentLesson}
+                                field="lstext"
+                                title="Lesson Notes"
+                                variant="notes"
+                                cancelled={cancelled}
+                            />
 
                             <HomeworkList lesson={currentLesson} />
 

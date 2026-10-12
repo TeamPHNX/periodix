@@ -105,6 +105,7 @@ const updateSettingsSchema = z.object({
     cancelledLessonsTimeScope: z.enum(['day', 'week']).optional(),
     irregularLessonsTimeScope: z.enum(['day', 'week']).optional(),
     upcomingLessonsEnabled: z.boolean().optional(),
+    absencesEnabled: z.boolean().optional(),
     devicePreferences: z.record(z.string(), z.any()).optional(),
 });
 

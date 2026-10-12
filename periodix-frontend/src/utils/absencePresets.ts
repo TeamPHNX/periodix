@@ -16,34 +16,48 @@ export const ABSENCE_PRESET_LABELS: Record<AbsencePreset, string> = {
     allTime: 'All time',
 };
 
+// Every preset covers its whole period, including the part still ahead:
+// absences can be entered in advance (trips, appointments, leave).
 export function getAbsencePresetRange(
     preset: AbsencePreset,
     referenceDate = new Date()
 ): DateRange {
     const now = new Date(referenceDate);
-    // Extend end date to 60 days in the future to include future absences
-    const end = fmtLocal(addDays(now, 60));
+    const schoolYearStartYear =
+        now.getMonth() >= SCHOOL_YEAR_START_MONTH
+            ? now.getFullYear()
+            : now.getFullYear() - 1;
+    // Last day of the school year that starts in `startYear` (31 July)
+    const schoolYearEnd = (startYear: number) =>
+        fmtLocal(new Date(startYear + 1, SCHOOL_YEAR_START_MONTH, 0));
 
     if (preset === 'thisMonth') {
-        const start = fmtLocal(new Date(now.getFullYear(), now.getMonth(), 1));
-        return { start, end };
+        return {
+            start: fmtLocal(new Date(now.getFullYear(), now.getMonth(), 1)),
+            end: fmtLocal(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
+        };
     }
 
     if (preset === 'schoolYear') {
-        const schoolYearStartYear =
-            now.getMonth() >= SCHOOL_YEAR_START_MONTH
-                ? now.getFullYear()
-                : now.getFullYear() - 1;
-        const start = fmtLocal(
-            new Date(schoolYearStartYear, SCHOOL_YEAR_START_MONTH, 1)
-        );
-        return { start, end };
+        return {
+            start: fmtLocal(
+                new Date(schoolYearStartYear, SCHOOL_YEAR_START_MONTH, 1)
+            ),
+            end: schoolYearEnd(schoolYearStartYear),
+        };
     }
 
     if (preset === 'allTime') {
-        return { start: DEFAULT_ALL_TIME_START, end };
+        // Through the end of next school year, so absences already planned
+        // beyond this one show up too
+        return {
+            start: DEFAULT_ALL_TIME_START,
+            end: schoolYearEnd(schoolYearStartYear + 1),
+        };
     }
 
-    const fallbackStart = fmtLocal(addDays(now, -30));
-    return { start: fallbackStart, end };
+    return {
+        start: fmtLocal(addDays(now, -30)),
+        end: fmtLocal(addDays(now, 60)),
+    };
 }

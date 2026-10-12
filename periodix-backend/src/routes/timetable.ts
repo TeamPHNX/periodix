@@ -8,6 +8,9 @@ import {
     getClassTimetable,
     searchClasses,
     getAbsentLessons,
+    storeAbsenceData,
+    getAbsenceHistory,
+    type AbsenceHistoryEntry,
 } from '../services/untisService.js';
 import {
     untisUserLimiter,
@@ -72,7 +75,35 @@ router.get('/absences', authMiddleware, untisUserLimiter, async (req, res) => {
             payload.excuseStatusId = params.data.excuseStatusId;
         }
         const data = await getAbsentLessons(payload);
-        res.json(data);
+        const userId = req.user!.id;
+        const absences: any[] = Array.isArray(data.absences)
+            ? data.absences
+            : [];
+        // Keep edit history for everyone who opens the list, not only users
+        // with absence notifications. What they see counts as announced.
+        if (data.source === 'live') {
+            try {
+                await storeAbsenceData(userId, absences, { seenByUser: true });
+            } catch (e: any) {
+                console.warn('[timetable/absences] store failed', e?.message);
+            }
+        }
+        let history = new Map<number, AbsenceHistoryEntry[]>();
+        try {
+            history = await getAbsenceHistory(
+                userId,
+                absences.map((a) => a?.id).filter((id) => typeof id === 'number'),
+            );
+        } catch (e: any) {
+            console.warn('[timetable/absences] history failed', e?.message);
+        }
+        res.json({
+            ...data,
+            absences: absences.map((a) => ({
+                ...a,
+                history: history.get(a?.id) ?? [],
+            })),
+        });
     } catch (e: any) {
         const status = e?.status || 500;
         const isServerError = status >= 500;

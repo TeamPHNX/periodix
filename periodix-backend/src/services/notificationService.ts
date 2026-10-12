@@ -27,6 +27,50 @@ if (vapidPublicKey && vapidPrivateKey) {
 // "New absence" notifications only for absences starting within this many days
 const NEW_ABSENCE_LOOKBACK_DAYS = 14;
 
+// Absence alerts are switched on per device: the settings toggle writes
+// devicePreferences[endpoint].absencesEnabled. The account-wide flag is only
+// the default for devices without their own choice (same rule as the UI).
+function deviceWantsAbsences(settings: any, entry: any): boolean {
+    const perDevice = entry?.absencesEnabled;
+    return perDevice === undefined
+        ? settings?.absencesEnabled === true
+        : perDevice === true;
+}
+
+function userWantsAbsences(settings: any): boolean {
+    if (settings?.absencesEnabled === true) return true;
+    const prefs = (settings?.devicePreferences || {}) as Record<string, any>;
+    return Object.values(prefs).some((p: any) => p?.absencesEnabled === true);
+}
+
+// Short summary of an absence edit for a notification, e.g.
+// "Excused, Reason: Illness"
+function describeAbsenceChanges(changes: unknown): string {
+    if (!Array.isArray(changes)) return '';
+    const parts: string[] = [];
+    let timeChanged = false;
+    for (const c of changes as Array<{ field: string; to: unknown }>) {
+        switch (c?.field) {
+            case 'isExcused':
+                parts.push(c.to ? 'Excused' : 'Unexcused');
+                break;
+            case 'reason':
+                parts.push(`Reason: ${c.to ?? 'None'}`);
+                break;
+            case 'excuseStatus':
+                parts.push(`Status: ${c.to ?? 'None'}`);
+                break;
+            case 'text':
+                parts.push('Note changed');
+                break;
+            default:
+                timeChanged = true;
+        }
+    }
+    if (timeChanged) parts.push('Time changed');
+    return parts.join(', ');
+}
+
 export interface NotificationData {
     type: string;
     title: string;
@@ -295,7 +339,14 @@ export class NotificationService {
                             break;
                         case 'absence_new':
                         case 'absence_change':
-                            flagKey = 'absencesEnabled';
+                            if (
+                                !deviceWantsAbsences(
+                                    user.notificationSettings,
+                                    devicePrefs[sub.endpoint],
+                                )
+                            ) {
+                                return;
+                            }
                             break;
                         default:
                             flagKey = null;
@@ -382,7 +433,8 @@ export class NotificationService {
                 return settings.accessRequestsEnabled;
             case 'absence_new':
             case 'absence_change':
-                return settings.absencesEnabled;
+                // Per-device opt-in is checked when sending to each device
+                return userWantsAbsences(settings);
             default:
                 return true;
         }
@@ -394,6 +446,14 @@ export class NotificationService {
         message?: string,
     ): Promise<void> {
         try {
+            // Admin switch; a missing row means the default (on)
+            const adminSettings = await (
+                prisma as any
+            ).adminNotificationSettings.findFirst();
+            if (adminSettings?.enableAccessRequestNotifications === false) {
+                return;
+            }
+
             const userManagers = await (prisma as any).user.findMany({
                 where: { isUserManager: true },
                 include: { notificationSettings: true },
@@ -451,10 +511,11 @@ export class NotificationService {
             const adminSettings = await (
                 prisma as any
             ).adminNotificationSettings.findFirst();
-            if (!adminSettings?.enableTimetableNotifications) {
+            // No row yet means the admin never opened these settings: use the
+            // defaults (on). Previously a missing row disabled them for good.
+            if (adminSettings?.enableTimetableNotifications === false) {
                 return;
             }
-
 
             // Refresh cache for users who either enabled push (for upcoming) OR timetable change notifications
             const usersToRefresh = await (prisma as any).user.findMany({
@@ -1380,32 +1441,27 @@ export class NotificationService {
     // Check for absence changes and notify users
     async checkAbsenceChanges(): Promise<void> {
         try {
-            const users = await (prisma as any).user.findMany({
-                where: {
-                    notificationSettings: {
-                        absencesEnabled: true,
-                    },
-                },
+            // The opt-in usually lives in per-device JSON preferences, which
+            // can't be filtered in the query; narrow it down here.
+            const candidates = await (prisma as any).user.findMany({
+                where: { notificationSettings: { isNot: null } },
                 include: {
                     notificationSettings: true,
                 },
             });
+            const users = candidates.filter((u: any) =>
+                userWantsAbsences(u.notificationSettings),
+            );
 
             for (const user of users) {
                 try {
-                    // Check absences for a 6-month window (-3 to +3 months)
+                    // 3 months back for late edits; 12 months ahead so absences
+                    // entered well in advance are announced when they're entered
                     const now = new Date();
                     const start = new Date(now);
                     start.setMonth(start.getMonth() - 3);
                     const end = new Date(now);
-                    end.setMonth(end.getMonth() + 3);
-
-                    const startInt = parseInt(
-                        start.toISOString().slice(0, 10).replace(/-/g, ''),
-                    );
-                    const endInt = parseInt(
-                        end.toISOString().slice(0, 10).replace(/-/g, ''),
-                    );
+                    end.setMonth(end.getMonth() + 12);
 
                     const freshAbsences = await fetchAbsencesFromUntis(
                         user.id,
@@ -1413,86 +1469,11 @@ export class NotificationService {
                         end,
                     );
 
-                    // Fetch existing from DB - use overlap logic to catch all relevant absences
-                    const existingAbsences = await (
-                        prisma as any
-                    ).absence.findMany({
-                        where: {
-                            userId: user.id,
-                            startDate: { lte: endInt },
-                            endDate: { gte: startInt },
-                        },
-                    });
-
-                    const recentCutoff = new Date(
-                        now.getTime() - NEW_ABSENCE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
-                    );
-                    const recentCutoffInt = parseInt(
-                        recentCutoff.toISOString().slice(0, 10).replace(/-/g, ''),
-                    );
-
-                    const existingMap = new Map(
-                        existingAbsences.map((a: any) => [a.untisId, a]),
-                    );
-
-                    for (const fresh of freshAbsences) {
-                        const existing = existingMap.get(fresh.id) as any;
-
-                        if (!existing) {
-                            // Only announce recently recorded absences. On the first sync
-                            // (nothing stored yet) every past absence would otherwise
-                            // arrive as a burst of "new absence" notifications.
-                            if (fresh.startDate < recentCutoffInt) continue;
-                            // New absence
-                            const dateStr = this.formatAbsenceDate(
-                                fresh.startDate,
-                            );
-                            await this.createNotification({
-                                type: 'absence_new',
-                                title: 'New Absence',
-                                message: `New absence recorded for ${dateStr}${
-                                    fresh.reason ? `: ${fresh.reason}` : ''
-                                }`,
-                                userId: user.id,
-                                data: fresh,
-                                dedupeKey: `absence_new:${user.id}:${fresh.id}`,
-                            });
-                        } else {
-                            // Check for changes
-                            const changes: string[] = [];
-                            if (existing.isExcused !== fresh.isExcused) {
-                                changes.push(
-                                    fresh.isExcused ? 'Excused' : 'Unexcused',
-                                );
-                            }
-                            if (existing.reason !== fresh.reason) {
-                                changes.push(
-                                    `Reason: ${fresh.reason || 'None'}`,
-                                );
-                            }
-
-                            if (changes.length > 0) {
-                                const dateStr = this.formatAbsenceDate(
-                                    fresh.startDate,
-                                );
-                                await this.createNotification({
-                                    type: 'absence_change',
-                                    title: 'Absence Updated',
-                                    message: `Absence on ${dateStr} updated: ${changes.join(
-                                        ', ',
-                                    )}`,
-                                    userId: user.id,
-                                    data: { ...fresh, changes },
-                                    dedupeKey: `absence_change:${user.id}:${
-                                        fresh.id
-                                    }:${changes.sort().join(',')}`, // Unique per change set
-                                });
-                            }
-                        }
-                    }
-
-                    // Update DB
+                    // Storing records new absences and keeps every edit as a
+                    // revision; notifications then cover whatever has not been
+                    // announced yet, including edits picked up elsewhere.
                     await storeAbsenceData(user.id, freshAbsences);
+                    await this.announceAbsenceUpdates(user.id, now);
                 } catch (e) {
                     console.error(
                         `Failed to check absences for user ${user.id}:`,
@@ -1502,6 +1483,75 @@ export class NotificationService {
             }
         } catch (error) {
             console.error('Failed to check absence changes:', error);
+        }
+    }
+
+    // Notify about stored absences that were never announced and about edits
+    // (revisions) not notified yet. Older items are marked without notifying,
+    // so switching notifications on later doesn't replay months of history.
+    private async announceAbsenceUpdates(userId: string, now: Date) {
+        const cutoff = new Date(
+            now.getTime() - NEW_ABSENCE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000,
+        );
+        const cutoffInt =
+            cutoff.getFullYear() * 10000 +
+            (cutoff.getMonth() + 1) * 100 +
+            cutoff.getDate();
+
+        const unannounced: any[] = await (prisma as any).absence.findMany({
+            where: { userId, announced: false },
+        });
+        for (const absence of unannounced) {
+            // Only announce recently recorded absences. On the first sync
+            // (nothing stored yet) every past absence would otherwise
+            // arrive as a burst of "new absence" notifications.
+            if (absence.startDate >= cutoffInt) {
+                await this.createNotification({
+                    type: 'absence_new',
+                    title: 'New Absence',
+                    message: `New absence recorded for ${this.formatAbsenceDate(
+                        absence.startDate,
+                    )}${absence.reason ? `: ${absence.reason}` : ''}`,
+                    userId,
+                    data: { untisId: absence.untisId },
+                    dedupeKey: `absence_new:${userId}:${absence.untisId}`,
+                });
+            }
+        }
+        if (unannounced.length) {
+            await (prisma as any).absence.updateMany({
+                where: { id: { in: unannounced.map((a) => a.id) } },
+                data: { announced: true },
+            });
+        }
+
+        const pending: any[] = await (prisma as any).absenceRevision.findMany({
+            where: { userId, notified: false },
+            include: { absence: { select: { startDate: true } } },
+            orderBy: { editedAt: 'asc' },
+        });
+        for (const revision of pending) {
+            const summary = describeAbsenceChanges(revision.changes);
+            if (revision.detectedAt >= cutoff && summary) {
+                await this.createNotification({
+                    type: 'absence_change',
+                    title: 'Absence Updated',
+                    message: `Absence on ${this.formatAbsenceDate(
+                        revision.absence.startDate,
+                    )} updated: ${summary}`,
+                    userId,
+                    data: { untisId: revision.untisId, revisionId: revision.id },
+                    // One notification per edit; the same kind of change can
+                    // happen again later (excused -> unexcused -> excused)
+                    dedupeKey: `absence_change:${userId}:${revision.id}`,
+                });
+            }
+        }
+        if (pending.length) {
+            await (prisma as any).absenceRevision.updateMany({
+                where: { id: { in: pending.map((r) => r.id) } },
+                data: { notified: true },
+            });
         }
     }
 

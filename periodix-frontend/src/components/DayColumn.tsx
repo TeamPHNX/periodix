@@ -2,6 +2,7 @@ import type { FC, ReactElement } from 'react';
 import { useState, useLayoutEffect, useRef, useEffect, useMemo } from 'react';
 import AdaptiveLessonContent from './AdaptiveLessonContent';
 import EllipsisIcon from './EllipsisIcon';
+import SubstitutionNoteIcon from './SubstitutionNoteIcon';
 import type { Lesson, LessonColors, Holiday } from '../types';
 import { getHolidayForDate } from '../utils/holidaySpans';
 import { fmtHM, untisToMinutes } from '../utils/dates';
@@ -118,7 +119,10 @@ const DayColumn: FC<DayColumnProps> = ({
     isToday = false,
     gradientOffsets,
     hideHeader = false,
-    mobileTinyLessonThresholdPx = 56,
+    // Subject, teacher and room need ~45px plus ~26px of block padding. At 56
+    // a 45-minute lesson (~50-62px depending on screen height) often got the
+    // three-line layout without room for it, clipping the subject.
+    mobileTinyLessonThresholdPx = 72,
     isDeveloperMode = false,
     suppressHolidayBanner = false,
     isClassTimetable = false,
@@ -263,6 +267,7 @@ const DayColumn: FC<DayColumnProps> = ({
     // Helper function to detect if a lesson is merged (contains merge separator)
     const isLessonMerged = (lesson: Lesson): boolean => {
         return (
+            (lesson.periods?.length ?? 0) > 1 ||
             (lesson.info?.includes(' | ') ?? false) ||
             (lesson.lstext?.includes(' | ') ?? false)
         );
@@ -1163,9 +1168,15 @@ const DayColumn: FC<DayColumnProps> = ({
                     // Cancelled/irregular lessons have 3px border that eats into content space
                     // Use less bottom padding for them to compensate
                     const hasBorder = cancelled || irregular;
-                    const paddingClasses = hasBorder
-                        ? 'px-2.5 pt-2.5 pb-1 sm:px-3 sm:pt-3 sm:pb-1'
-                        : 'px-2.5 pt-2.5 pb-3 sm:px-3 sm:pt-3 sm:pb-3';
+                    // Compact phone blocks (two lines) can't spare the full
+                    // vertical padding: on short screens it clipped the subject
+                    const paddingClasses = isTinyMobileSingle
+                        ? hasBorder
+                            ? 'px-2.5 py-0.5'
+                            : 'px-2.5 py-1'
+                        : hasBorder
+                          ? 'px-2.5 pt-2.5 pb-1 sm:px-3 sm:pt-3 sm:pb-1'
+                          : 'px-2.5 pt-2.5 pb-3 sm:px-3 sm:pt-3 sm:pb-3';
 
                     return (
                         <div
@@ -1347,6 +1358,14 @@ const DayColumn: FC<DayColumnProps> = ({
                                             </svg>
                                         </div>
                                     )}
+                                    {l.substText && (
+                                        <div
+                                            className="w-3 h-3 bg-fuchsia-400 dark:bg-fuchsia-500 rounded-full flex items-center justify-center shadow-sm"
+                                            title="Substitution note"
+                                        >
+                                            <SubstitutionNoteIcon className="w-2 h-2 text-white" />
+                                        </div>
+                                    )}
                                     {!isClassTimetable &&
                                         l.exams &&
                                         l.exams.length > 0 && (
@@ -1425,6 +1444,7 @@ const DayColumn: FC<DayColumnProps> = ({
                                             l.homework && l.homework.length > 0;
                                         const hasInfo = !!l.info;
                                         const hasLstext = !!l.lstext;
+                                        const hasSubstText = !!l.substText;
                                         const hasExams =
                                             !isClassTimetable &&
                                             l.exams &&
@@ -1433,6 +1453,7 @@ const DayColumn: FC<DayColumnProps> = ({
                                             hasHomework,
                                             hasInfo,
                                             hasLstext,
+                                            hasSubstText,
                                             hasExams,
                                         ].filter(Boolean).length;
 
@@ -1502,6 +1523,15 @@ const DayColumn: FC<DayColumnProps> = ({
                                                         >
                                                             <path d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h8.5a2 2 0 001.414-.586l2.5-2.5A2 2 0 0017 12.5V5a2 2 0 00-2-2H4zm9 10h1.586L13 14.586V13z" />
                                                         </svg>
+                                                    </div>,
+                                                );
+                                            if (hasSubstText)
+                                                badges.push(
+                                                    <div
+                                                        key="subst"
+                                                        className={`bg-fuchsia-500/90 dark:bg-fuchsia-400/90 ${baseClass}`}
+                                                    >
+                                                        <SubstitutionNoteIcon className="w-2 h-2 text-white" />
                                                     </div>,
                                                 );
                                             if (hasExams)

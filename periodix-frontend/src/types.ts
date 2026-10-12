@@ -49,6 +49,16 @@ export type Lesson = {
     activityType?: string;
     info?: string; // Additional lesson information
     lstext?: string; // Additional lesson text (notes)
+    substText?: string; // Substitution text from Untis, e.g. "Arbeitsauftrag"
+    // Set on merged blocks: the hours they were built from, so notes that
+    // differ per hour can still be shown separately
+    periods?: Array<{
+        startTime: number;
+        endTime: number;
+        substText?: string;
+        info?: string;
+        lstext?: string;
+    }>;
     homework?: Homework[]; // Associated homework
     exams?: Exam[]; // Associated exams
 };
@@ -172,6 +182,18 @@ export type AbsenceRecord = {
         username?: string;
     } | null;
     interruptions?: unknown[];
+    // Earlier versions of this absence, newest edit first (kept by Periodix)
+    history?: AbsenceHistoryEntry[];
+};
+
+export type AbsenceHistoryEntry = {
+    editedAt: string; // when the edit was made in Untis (ISO)
+    editedBy: string | null;
+    changes: Array<{
+        field: string;
+        from: string | number | boolean | null;
+        to: string | number | boolean | null;
+    }>;
 };
 
 export type AbsenceResponse = {

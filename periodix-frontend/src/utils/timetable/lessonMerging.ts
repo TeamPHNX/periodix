@@ -42,6 +42,19 @@ function buildLessonBaseSignature(lesson: Lesson): string {
     return `${subject}|${teacher}|${room}|${code}`;
 }
 
+// What a merged block would show from its first lesson only. Two hours of a
+// double lesson share an Untis lesson number, but a substitute teacher or a
+// room change can still differ per hour.
+function buildLessonDisplaySignature(lesson: Lesson): string {
+    const people = (entries?: Array<{ name?: string; orgname?: string }>) =>
+        (entries || [])
+            .map((e) => `${e?.name || ''}<${e?.orgname || ''}`)
+            .sort()
+            .join(',');
+    const subject = lesson.su?.[0]?.name ?? lesson.activityType ?? '';
+    return [subject, people(lesson.te), people(lesson.ro)].join('|');
+}
+
 function deriveLessonSignature(lesson: Lesson) {
     return {
         identifier: extractLessonIdentifier(lesson as MaybeIdentifiedLesson),
@@ -95,6 +108,12 @@ export function canMergeLessons(lesson1: Lesson, lesson2: Lesson): boolean {
             : sig1.base === sig2.base;
 
     if (!sameGroup) return false;
+
+    // Merging keeps only the first lesson's teachers and rooms, so any
+    // difference there must stay visible as separate blocks
+    if (buildLessonDisplaySignature(lesson1) !== buildLessonDisplaySignature(lesson2)) {
+        return false;
+    }
 
     const lesson1EndMin = untisToMinutes(lesson1.endTime);
     const lesson2StartMin = untisToMinutes(lesson2.startTime);
@@ -212,8 +231,24 @@ export function mergeTwoLessons(lesson1: Lesson, lesson2: Lesson): Lesson {
         return parts.join(' | ');
     };
 
+    const periodsOf = (l: Lesson): NonNullable<Lesson['periods']> =>
+        l.periods ?? [
+            {
+                startTime: l.startTime,
+                endTime: l.endTime,
+                substText: l.substText?.trim() || undefined,
+                info: l.info?.trim() || undefined,
+                lstext: l.lstext?.trim() || undefined,
+            },
+        ];
+
     return {
         ...lesson1, // Use first lesson as base
+        // The single hours, so the lesson details can show per-hour differences
+        periods: [...periodsOf(lesson1), ...periodsOf(lesson2)].sort(
+            (a, b) => a.startTime - b.startTime,
+        ),
+        substText: combineNotes(lesson1.substText, lesson2.substText),
         startTime: Math.min(lesson1.startTime, lesson2.startTime),
         endTime: Math.max(lesson1.endTime, lesson2.endTime),
         // Merge and deduplicate homework arrays

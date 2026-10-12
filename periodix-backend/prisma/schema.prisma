@@ -292,19 +292,48 @@ model HourlyStats {
 }
 
 model Absence {
-  id        String   @id @default(uuid())
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  untisId   Int
-  userId    String
-  startDate Int
-  endDate   Int
-  startTime Int?
-  endTime   Int?
-  reason    String?
-  isExcused Boolean  @default(false)
-  fetchedAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id             String            @id @default(uuid())
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  untisId        Int
+  userId         String
+  startDate      Int
+  endDate        Int
+  startTime      Int?
+  endTime        Int?
+  reason         String?
+  isExcused      Boolean           @default(false)
+  excuseStatus   String?
+  text           String?
+  // When the absence was last edited in Untis, and by whom
+  untisUpdatedAt DateTime?
+  updatedBy      String?
+  // A "new absence" notification was sent or deliberately skipped
+  announced      Boolean           @default(false)
+  fetchedAt      DateTime          @default(now())
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  revisions      AbsenceRevision[]
 
   @@unique([userId, untisId])
+}
+
+// The state of an absence before an edit made in Untis
+model AbsenceRevision {
+  id         String   @id @default(uuid())
+  absenceId  String
+  userId     String
+  untisId    Int
+  // When the edit was made in Untis (falls back to when it was detected)
+  editedAt   DateTime
+  editedBy   String?
+  detectedAt DateTime @default(now())
+  // Field values before the edit, and a list of { field, from, to }
+  previous   Json
+  changes    Json
+  // An "absence updated" notification was sent or deliberately skipped
+  notified   Boolean  @default(false)
+  absence    Absence  @relation(fields: [absenceId], references: [id], onDelete: Cascade)
+
+  @@index([userId, untisId])
+  @@index([absenceId])
 }

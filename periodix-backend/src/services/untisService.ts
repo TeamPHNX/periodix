@@ -2397,9 +2397,14 @@ export async function fetchAbsencesFromUntis(
             reasonsMap.set(r.id, r.name);
         }
 
+        // Untis already puts the reason text on each absence; the separate
+        // reason list is often empty, so only use it as a fallback.
         return absences.map((a: any) => ({
             ...a,
-            reason: a.reasonId ? reasonsMap.get(a.reasonId) || null : null,
+            reason:
+                a.reason ||
+                (a.reasonId ? reasonsMap.get(a.reasonId) : null) ||
+                null,
         }));
     } finally {
         try {
@@ -2408,30 +2413,129 @@ export async function fetchAbsencesFromUntis(
     }
 }
 
-export async function storeAbsenceData(userId: string, absenceData: any[]) {
+// Absence fields whose edits are kept as history, in display order
+const ABSENCE_TRACKED_FIELDS = [
+    'startDate',
+    'endDate',
+    'startTime',
+    'endTime',
+    'reason',
+    'isExcused',
+    'excuseStatus',
+    'text',
+] as const;
+type AbsenceTrackedField = (typeof ABSENCE_TRACKED_FIELDS)[number];
+type AbsenceSnapshot = Record<AbsenceTrackedField, string | number | boolean | null>;
+
+function snapshotFromUntis(abs: any): AbsenceSnapshot {
+    const str = (v: unknown) =>
+        typeof v === 'string' && v.trim() !== '' ? v.trim() : null;
+    const num = (v: unknown) => (typeof v === 'number' ? v : null);
+    return {
+        startDate: num(abs.startDate),
+        endDate: num(abs.endDate),
+        startTime: num(abs.startTime),
+        endTime: num(abs.endTime),
+        reason: str(abs.reason),
+        isExcused: Boolean(abs.isExcused ?? abs.excuse?.isExcused),
+        excuseStatus: str(abs.excuseStatus ?? abs.excuse?.excuseStatus),
+        text: str(abs.text),
+    };
+}
+
+function snapshotFromRow(row: any): AbsenceSnapshot {
+    const out = {} as AbsenceSnapshot;
+    for (const f of ABSENCE_TRACKED_FIELDS) out[f] = row[f] ?? null;
+    out.isExcused = Boolean(row.isExcused);
+    return out;
+}
+
+function untisMillisToDate(value: unknown): Date | null {
+    return typeof value === 'number' && value > 0 ? new Date(value) : null;
+}
+
+/**
+ * Stores fetched absences. When a stored absence differs from the fresh one,
+ * its previous values are kept as an AbsenceRevision dated to the edit in
+ * Untis. With `seenByUser` (the user has the absence list open) new absences
+ * and edits count as already announced, so no notification follows later.
+ */
+export async function storeAbsenceData(
+    userId: string,
+    absenceData: any[],
+    options: { seenByUser?: boolean } = {},
+) {
+    const seen = options.seenByUser === true;
+    const ids = absenceData
+        .map((a) => a?.id)
+        .filter((id): id is number => typeof id === 'number');
+    if (!ids.length) return;
+    const existingRows: any[] = await (prisma as any).absence.findMany({
+        where: { userId, untisId: { in: ids } },
+    });
+    const existingById = new Map(existingRows.map((r) => [r.untisId, r]));
+
     for (const abs of absenceData) {
+        if (typeof abs?.id !== 'number') continue;
+        const next = snapshotFromUntis(abs);
+        const untisUpdatedAt = untisMillisToDate(abs.lastUpdate);
+        const updatedBy =
+            typeof abs.updatedUser === 'string' && abs.updatedUser
+                ? abs.updatedUser
+                : null;
         try {
-            await (prisma as any).absence.upsert({
-                where: { userId_untisId: { userId, untisId: abs.id } },
-                update: {
-                    startDate: abs.startDate,
-                    endDate: abs.endDate,
-                    startTime: abs.startTime,
-                    endTime: abs.endTime,
-                    reason: abs.reason,
-                    isExcused: abs.isExcused,
-                    fetchedAt: new Date(),
-                },
-                create: {
-                    untisId: abs.id,
-                    userId,
-                    startDate: abs.startDate,
-                    endDate: abs.endDate,
-                    startTime: abs.startTime,
-                    endTime: abs.endTime,
-                    reason: abs.reason,
-                    isExcused: abs.isExcused,
-                },
+            const existing = existingById.get(abs.id);
+            if (!existing) {
+                await (prisma as any).absence.create({
+                    data: {
+                        untisId: abs.id,
+                        userId,
+                        ...next,
+                        untisUpdatedAt,
+                        updatedBy,
+                        announced: seen,
+                    },
+                });
+                continue;
+            }
+
+            const previous = snapshotFromRow(existing);
+            // Rows stored before history existed lack these fields; filling
+            // them in for the first time is not an edit.
+            const legacy = existing.untisUpdatedAt == null;
+            const changes = ABSENCE_TRACKED_FIELDS.filter((f) => {
+                if (legacy && previous[f] === null) return false;
+                return previous[f] !== next[f];
+            }).map((field) => ({
+                field,
+                from: previous[field],
+                to: next[field],
+            }));
+
+            await (prisma as any).$transaction(async (tx: any) => {
+                if (changes.length) {
+                    await tx.absenceRevision.create({
+                        data: {
+                            absenceId: existing.id,
+                            userId,
+                            untisId: abs.id,
+                            editedAt: untisUpdatedAt ?? new Date(),
+                            editedBy: updatedBy,
+                            previous,
+                            changes,
+                            notified: seen,
+                        },
+                    });
+                }
+                await tx.absence.update({
+                    where: { id: existing.id },
+                    data: {
+                        ...next,
+                        untisUpdatedAt,
+                        updatedBy,
+                        fetchedAt: new Date(),
+                    },
+                });
             });
         } catch (e: any) {
             console.warn(
@@ -2440,4 +2544,34 @@ export async function storeAbsenceData(userId: string, absenceData: any[]) {
             );
         }
     }
+}
+
+export type AbsenceHistoryEntry = {
+    editedAt: string;
+    editedBy: string | null;
+    changes: Array<{ field: string; from: unknown; to: unknown }>;
+};
+
+/** Edit history per Untis absence id, newest edit first. */
+export async function getAbsenceHistory(
+    userId: string,
+    untisIds: number[],
+): Promise<Map<number, AbsenceHistoryEntry[]>> {
+    const byId = new Map<number, AbsenceHistoryEntry[]>();
+    if (!untisIds.length) return byId;
+    const rows: any[] = await (prisma as any).absenceRevision.findMany({
+        where: { userId, untisId: { in: untisIds } },
+        orderBy: { editedAt: 'desc' },
+        select: { untisId: true, editedAt: true, editedBy: true, changes: true },
+    });
+    for (const r of rows) {
+        const list = byId.get(r.untisId) ?? [];
+        list.push({
+            editedAt: r.editedAt.toISOString(),
+            editedBy: r.editedBy ?? null,
+            changes: Array.isArray(r.changes) ? r.changes : [],
+        });
+        byId.set(r.untisId, list);
+    }
+    return byId;
 }

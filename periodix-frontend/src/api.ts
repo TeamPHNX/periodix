@@ -41,12 +41,30 @@ function handleAuthError(text: string): void {
     }
 }
 
+// Issue time (JWT `iat`, seconds) or 0 if the token can't be decoded.
+function tokenIssuedAt(token: string | null): number {
+    try {
+        const part = token?.split('.')[1];
+        if (!part) return 0;
+        const json = atob(part.replace(/-/g, '+').replace(/_/g, '/'));
+        const iat = JSON.parse(json)?.iat;
+        return typeof iat === 'number' ? iat : 0;
+    } catch {
+        return 0;
+    }
+}
+
 function handleTokenRefresh(response: Response): void {
     // Check if response contains a refreshed token
     const refreshedToken = response.headers.get('X-Refreshed-Token');
-    if (refreshedToken && globalTokenUpdateHandler) {
-        globalTokenUpdateHandler(refreshedToken);
-    }
+    if (!refreshedToken || !globalTokenUpdateHandler) return;
+    // Only move forward: a late response to an older request (or a replayed
+    // one) must not swap in an older token. Each swap re-runs every
+    // token-dependent effect, so flip-flopping turned into a request storm.
+    const current = localStorage.getItem('token');
+    if (refreshedToken === current) return;
+    if (tokenIssuedAt(refreshedToken) <= tokenIssuedAt(current)) return;
+    globalTokenUpdateHandler(refreshedToken);
 }
 
 export async function api<T>(

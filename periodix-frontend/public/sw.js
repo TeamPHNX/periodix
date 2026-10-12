@@ -1,13 +1,24 @@
 // Enhanced service worker for PWA with notification support and optimized caching
-const CACHE_NAME = 'periodix-shell-v3';
+// v4: drops API responses cached by v3, which still carried auth tokens.
+const CACHE_NAME = 'periodix-shell-v4';
 const STATIC_CACHE_NAME = 'periodix-static-v1';
 const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest'];
 
 // Static assets that can be cached aggressively
 const STATIC_ASSETS_PATTERN = /\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|webp)$/i;
 
-// Cache duration for API responses (in seconds)
-const API_CACHE_TTL = 60; // 1 minute for API responses
+// A cached API response must never carry a token: replayed later, the app
+// adopted its old X-Refreshed-Token as the login (expired ones logged users
+// out, day-old ones set off a refresh/refetch loop).
+async function withoutAuthHeaders(res) {
+    const headers = new Headers(res.headers);
+    headers.delete('X-Refreshed-Token');
+    return new Response(await res.blob(), {
+        status: res.status,
+        statusText: res.statusText,
+        headers,
+    });
+}
 
 self.addEventListener('install', (event) => {
     event.waitUntil(
@@ -170,17 +181,16 @@ self.addEventListener('fetch', (event) => {
     
     const url = new URL(request.url);
     
-    // Network first for API, with optional fallback to cached response
+    // Network first for API; the cached copy is only an offline fallback.
     if (url.pathname.startsWith('/api/')) {
         event.respondWith(
             fetch(request)
-                .then((res) => {
+                .then(async (res) => {
                     // Don't cache non-ok responses or auth-related endpoints
                     if (!res.ok || url.pathname.includes('/auth/')) {
                         return res;
                     }
-                    // Optionally cache GET API responses briefly
-                    const copy = res.clone();
+                    const copy = await withoutAuthHeaders(res.clone());
                     caches.open(CACHE_NAME).then((c) => c.put(request, copy));
                     return res;
                 })

@@ -33,6 +33,14 @@ const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 const STORAGE_KEY = 'periodix:resources';
 const POLL_MS = 2500;
 const MAX_RECENTS = 6;
+// Teacher / room weeks are kept briefly so swiping to an adjacent week shows
+// it at once, like the normal timetable. The server only reads its own
+// database for these, so prefetching costs no Untis requests.
+const TIMETABLE_CACHE_TTL_MS = 60_000;
+const TIMETABLE_CACHE_MAX = 30;
+
+const timetableKey = (type: ResourceType, id: number, week: string) =>
+    `${type}:${id}:${week}`;
 
 type StoredPrefs = {
     tab: Tab;
@@ -94,13 +102,25 @@ export default function ResourceManager({
 
     const [prefs, setPrefs] = useState<StoredPrefs>(loadPrefs);
     const [index, setIndex] = useState<ResourceIndexResponse | null>(null);
+    // Week the shown index belongs to; it stays visible while the next one loads
+    const indexWeekRef = useRef<string | null>(null);
     const [indexError, setIndexError] = useState<string | null>(null);
+    const weekKeyRef = useRef(weekKey);
+    weekKeyRef.current = weekKey;
     const [refreshing, setRefreshing] = useState(false);
     // Bumped after a refresh job finishes so open views refetch
     const [dataVersion, setDataVersion] = useState(0);
 
-    const [timetable, setTimetable] = useState<TimetableResponse | null>(null);
-    const [timetableError, setTimetableError] = useState<string | null>(null);
+    const timetableCacheRef = useRef(
+        new Map<string, { data: TimetableResponse; at: number }>(),
+    );
+    const inFlightRef = useRef(new Map<string, Promise<TimetableResponse>>());
+    // Bumped whenever the cache gains an entry, so the view re-reads it
+    const [cacheVersion, setCacheVersion] = useState(0);
+    const [timetableError, setTimetableError] = useState<{
+        key: string;
+        message: string;
+    } | null>(null);
 
     const todayOffset = useMemo(() => {
         const diff = Math.floor(
@@ -131,17 +151,18 @@ export default function ResourceManager({
     const loadIndex = useCallback(async () => {
         try {
             const res = await getResourceIndex(token, weekKey);
+            // A slower response for a week the user already left
+            if (weekKeyRef.current !== weekKey) return;
             setIndex(res);
+            indexWeekRef.current = weekKey;
             setIndexError(null);
         } catch (err) {
+            if (weekKeyRef.current !== weekKey) return;
             setIndexError(errorMessage(err));
+            // Don't keep showing another week's lists next to the error
+            if (indexWeekRef.current !== weekKey) setIndex(null);
         }
     }, [token, weekKey]);
-
-    // Only clear the view when the week changes, not when the token is refreshed
-    useEffect(() => {
-        setIndex(null);
-    }, [weekKey]);
 
     useEffect(() => {
         if (!allowed) return;
@@ -193,26 +214,92 @@ export default function ResourceManager({
         }
     };
 
-    // --- Teacher / room timetable
+    // --- Teacher / room timetable (cached per week; adjacent weeks prefetched)
+    const fetchTimetable = useCallback(
+        (type: ResourceType, id: number, week: string, force = false) => {
+            const key = timetableKey(type, id, week);
+            const hit = timetableCacheRef.current.get(key);
+            if (!force && hit && Date.now() - hit.at < TIMETABLE_CACHE_TTL_MS) {
+                return Promise.resolve(hit.data);
+            }
+            const pending = inFlightRef.current.get(key);
+            if (pending && !force) return pending;
+            const request = getResourceTimetable(token, type, id, week)
+                .then((res) => {
+                    const cache = timetableCacheRef.current;
+                    cache.delete(key); // re-insert so it counts as newest
+                    cache.set(key, { data: res, at: Date.now() });
+                    while (cache.size > TIMETABLE_CACHE_MAX) {
+                        cache.delete(cache.keys().next().value as string);
+                    }
+                    setCacheVersion((v) => v + 1);
+                    return res;
+                })
+                .finally(() => {
+                    if (inFlightRef.current.get(key) === request) {
+                        inFlightRef.current.delete(key);
+                    }
+                });
+            inFlightRef.current.set(key, request);
+            return request;
+        },
+        [token],
+    );
+
+    // A finished refresh job changes the current week's data on the server
+    const seenDataVersionRef = useRef(dataVersion);
     useEffect(() => {
-        if (!allowed || !resourceType || selectedId === null) {
-            setTimetable(null);
-            return;
-        }
+        if (!allowed || !resourceType || selectedId === null) return;
+        const force = seenDataVersionRef.current !== dataVersion;
+        seenDataVersionRef.current = dataVersion;
+        const key = timetableKey(resourceType, selectedId, weekKey);
         let cancelled = false;
-        getResourceTimetable(token, resourceType, selectedId, weekKey)
-            .then((res) => {
+        fetchTimetable(resourceType, selectedId, weekKey, force)
+            .then(() => {
                 if (cancelled) return;
-                setTimetable(res);
                 setTimetableError(null);
+                // Warm the neighbours so a swipe lands on a ready week
+                for (const offset of [-7, 7]) {
+                    const week = fmtLocal(addDays(weekStart, offset));
+                    fetchTimetable(resourceType, selectedId, week).catch(() => {
+                        /* prefetch only */
+                    });
+                }
             })
             .catch((err) => {
-                if (!cancelled) setTimetableError(errorMessage(err));
+                if (!cancelled) setTimetableError({ key, message: errorMessage(err) });
             });
         return () => {
             cancelled = true;
         };
-    }, [allowed, token, resourceType, selectedId, weekKey, dataVersion]);
+        // weekStart is represented by weekKey
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [allowed, resourceType, selectedId, weekKey, dataVersion, fetchTimetable]);
+
+    // Read straight from the cache during render: after a swipe the new week
+    // is on screen in the same frame the week changes, with no empty flash.
+    const cachedTimetable = (week: string): TimetableResponse | null =>
+        resourceType && selectedId !== null
+            ? (timetableCacheRef.current.get(
+                  timetableKey(resourceType, selectedId, week),
+              )?.data ?? null)
+            : null;
+    void cacheVersion; // re-render trigger for the reads above
+    const timetable = cachedTimetable(weekKey);
+    const getAdjacentWeekData = useCallback(
+        (direction: 'prev' | 'next') =>
+            cachedTimetable(
+                fmtLocal(addDays(weekStart, direction === 'prev' ? -7 : 7)),
+            ),
+        // cacheVersion: hand Timetable a new function when the cache fills
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        [resourceType, selectedId, weekStart, cacheVersion],
+    );
+    const currentTimetableError =
+        resourceType && selectedId !== null &&
+        timetableError?.key === timetableKey(resourceType, selectedId, weekKey)
+            ? timetableError.message
+            : null;
 
     // --- Free rooms for one day of the week
     const freeDate = fmtLocal(addDays(weekStart, freeDay));
@@ -236,7 +323,6 @@ export default function ResourceManager({
     const setTab = (next: Tab) => setPrefs((p) => ({ ...p, tab: next }));
 
     const selectResource = (type: ResourceType, id: number) => {
-        if (prefs.selected[type] !== id) setTimetable(null);
         setPrefs((p) => ({
             ...p,
             tab: type,
@@ -346,9 +432,9 @@ export default function ResourceManager({
                         </div>
                     ) : (
                         <>
-                            {timetableError && (
+                            {currentTimetableError && (
                                 <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/40 dark:text-amber-200">
-                                    {timetableError}
+                                    {currentTimetableError}
                                 </div>
                             )}
                             {selectedSummary && (
@@ -374,6 +460,7 @@ export default function ResourceManager({
                                 defaultLessonColors={defaultLessonColors}
                                 token={token}
                                 onWeekNavigate={onWeekNavigate}
+                                getAdjacentWeekData={getAdjacentWeekData}
                                 isClassView
                                 resourceView={resourceType}
                             />
