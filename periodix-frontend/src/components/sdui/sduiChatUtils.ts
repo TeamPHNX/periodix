@@ -101,14 +101,6 @@ export function getChatPreview(chat: SduiChatItem): string {
     return normalized;
 }
 
-export function getChatTimestamp(chat: SduiChatItem): string {
-    const raw = chat?.activity_at || chat?.updated_at;
-    if (!raw) return '';
-    const date = new Date(raw);
-    if (Number.isNaN(date.getTime())) return '';
-    return date.toLocaleDateString('de-DE');
-}
-
 export function getMessageChatId(chat: SduiChatItem): string {
     return String(chat?.chat?.id ?? chat?.chat_id ?? chat?.id ?? '');
 }

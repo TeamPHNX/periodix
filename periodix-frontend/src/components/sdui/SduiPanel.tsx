@@ -5,9 +5,14 @@ import { SduiChat } from './SduiChat';
 interface SduiPanelProps {
     isOpen: boolean;
     onClose: () => void;
+    onUnreadCountChange?: (unreadChats: number) => void;
 }
 
-export default function SduiPanel({ isOpen, onClose }: SduiPanelProps) {
+export default function SduiPanel({
+    isOpen,
+    onClose,
+    onUnreadCountChange,
+}: SduiPanelProps) {
     const [animating, setAnimating] = useState(false);
     const [hasOpenedOnce, setHasOpenedOnce] = useState(false);
     const panelRef = useRef<HTMLDivElement | null>(null);
@@ -105,7 +110,7 @@ export default function SduiPanel({ isOpen, onClose }: SduiPanelProps) {
                     </button>
                 </div>
                 <div className="relative min-h-0 w-full flex-1 overflow-hidden">
-                    <SduiChat />
+                    <SduiChat onUnreadCountChange={onUnreadCountChange} />
                 </div>
             </div>
         </div>,

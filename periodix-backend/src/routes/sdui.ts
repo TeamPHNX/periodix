@@ -330,11 +330,20 @@ router.get('/chats', authMiddleware, async (req, res) => {
                 }
 
                 const PAGE_SIZE = 50;
-                const MAX_PAGES = 20;
+                // ?page=N fetches just that page (used for background polling)
+                const singlePage = Number.parseInt(
+                    String(req.query.page ?? ''),
+                    10,
+                );
+                const firstPage =
+                    Number.isInteger(singlePage) && singlePage > 0
+                        ? singlePage
+                        : 1;
+                const lastPage = firstPage === singlePage ? firstPage : 20;
                 const allChats: any[] = [];
                 const seenIds = new Set<string>();
 
-                for (let page = 1; page <= MAX_PAGES; page += 1) {
+                for (let page = firstPage; page <= lastPage; page += 1) {
                     const chatResponse = await client.getUserChats<any>(
                         sduiUserId,
                         {
@@ -385,6 +394,92 @@ router.get('/chats', authMiddleware, async (req, res) => {
             error,
             'Failed to fetch SDUI chats',
             'fetch chats',
+        );
+    }
+});
+
+function extractChatList(response: any): any[] {
+    if (Array.isArray(response)) return response;
+    if (Array.isArray(response?.data)) return response.data;
+    return [];
+}
+
+// Mirrors isChatUnread/getChatUnreadCount in the frontend (sduiChatListUtils.ts):
+// meta.last_unread_count is the count the official app shows, meta.is_unread
+// marks a chat as unread without a count.
+function countUnreadChats(chats: any[]): { chats: number; messages: number } {
+    let unreadChats = 0;
+    let unreadMessages = 0;
+
+    for (const chat of chats) {
+        const meta = chat?.meta ?? {};
+        const rawCount = Number(meta.last_unread_count);
+        const count = Number.isFinite(rawCount) && rawCount > 0 ? rawCount : 0;
+        const marked = meta.is_unread === true || meta.is_unread === 1;
+        if (count === 0 && !marked) continue;
+        unreadChats += 1;
+        unreadMessages += count > 0 ? count : 1;
+    }
+
+    return { chats: unreadChats, messages: unreadMessages };
+}
+
+// Lightweight badge source: only the first page, which SDUI sorts by activity,
+// so unread chats are on it in practice.
+router.get('/unread', authMiddleware, async (req, res) => {
+    try {
+        if (!req.user?.id) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const summary = await withSduiClient(
+            req.user.id,
+            async ({ client, sduiUserId }) => {
+                if (!sduiUserId) {
+                    throw new SduiRouteError(401, 'SDUI not authenticated');
+                }
+                const response = await client.getUserChats<any>(sduiUserId, {
+                    page: 1,
+                    limit: 50,
+                });
+                return countUnreadChats(extractChatList(response));
+            },
+            { requireUserId: true },
+        );
+
+        return res.json(summary);
+    } catch (error) {
+        return respondWithSduiError(
+            res,
+            error,
+            'Failed to fetch unread count',
+            'fetch unread count',
+        );
+    }
+});
+
+router.post('/chats/:chatId/read', authMiddleware, async (req, res) => {
+    try {
+        if (!req.user?.id) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        const chatId = getSinglePathParam(req.params.chatId);
+        if (!chatId) {
+            return res.status(400).json({ error: 'Missing chatId' });
+        }
+
+        await withSduiClient(req.user.id, async ({ client }) =>
+            client.markChatAsRead(chatId),
+        );
+
+        return res.json({ success: true });
+    } catch (error) {
+        return respondWithSduiError(
+            res,
+            error,
+            'Failed to mark chat as read',
+            'mark chat read',
         );
     }
 });

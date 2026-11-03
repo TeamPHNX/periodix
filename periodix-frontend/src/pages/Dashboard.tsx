@@ -266,6 +266,46 @@ export default function Dashboard({
 
     // SDUI status
     const [isSduiPanelOpen, setIsSduiPanelOpen] = useState(false);
+    const [sduiUnreadChats, setSduiUnreadChats] = useState(0);
+
+    // Badge for unread SDUI chats. While the panel is open, the chat view
+    // reports the count itself. 401 just means SDUI isn't connected.
+    useEffect(() => {
+        if (isSduiPanelOpen) return;
+
+        let cancelled = false;
+        const poll = async () => {
+            if (document.visibilityState !== 'visible') return;
+            try {
+                const res = await fetch('/api/sdui/unread', {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (cancelled) return;
+                if (!res.ok) {
+                    setSduiUnreadChats(0);
+                    return;
+                }
+                const body = await res.json();
+                setSduiUnreadChats(
+                    typeof body?.chats === 'number' ? body.chats : 0,
+                );
+            } catch {
+                // Offline etc.: keep the last known value.
+            }
+        };
+
+        void poll();
+        const intervalId = window.setInterval(poll, 120_000);
+        const onVisible = () => {
+            if (document.visibilityState === 'visible') void poll();
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+            cancelled = true;
+            window.clearInterval(intervalId);
+            document.removeEventListener('visibilitychange', onVisible);
+        };
+    }, [isSduiPanelOpen, token]);
 
     // Onboarding state
     const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
@@ -1470,9 +1510,19 @@ export default function Dashboard({
                         </div>
                         <button
                             onClick={() => setIsSduiPanelOpen(true)}
-                            className="flex items-center justify-center p-2 mr-2 rounded-full hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors text-slate-600 dark:text-slate-300"
+                            className="relative flex items-center justify-center p-2 mr-2 rounded-full hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors text-slate-600 dark:text-slate-300"
                             title="SDUI Chats"
+                            aria-label={
+                                sduiUnreadChats > 0
+                                    ? `SDUI Chats, ${sduiUnreadChats} ungelesen`
+                                    : 'SDUI Chats'
+                            }
                         >
+                            {sduiUnreadChats > 0 && (
+                                <span className="absolute -right-0.5 -top-0.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white dark:ring-slate-900">
+                                    {sduiUnreadChats > 9 ? '9+' : sduiUnreadChats}
+                                </span>
+                            )}
                             <svg
                                 className="w-5 h-5"
                                 fill="none"
@@ -2458,6 +2508,7 @@ export default function Dashboard({
                 <SduiPanel
                     isOpen={isSduiPanelOpen}
                     onClose={() => setIsSduiPanelOpen(false)}
+                    onUnreadCountChange={setSduiUnreadChats}
                 />
                 <OnboardingModal
                     isOpen={isOnboardingOpen}

@@ -10,6 +10,7 @@ import { SduiMessageActionsMenu } from './SduiMessageActionsMenu';
 import { SduiDeleteConfirmModal } from './SduiDeleteConfirmModal';
 import { SduiMessageInfoModal } from './SduiMessageInfoModal';
 import { SduiDevPanel } from './SduiDevPanel';
+import { PinIcon, SduiChatList } from './SduiChatList';
 import { SduiRawJsonBlock, isSduiDeveloperModeEnabled } from './SduiDevTools';
 import {
     extractImageUrls,
@@ -21,11 +22,16 @@ import {
 } from './sduiAttachmentUtils';
 import { renderTextWithLinks } from './sduiLinkText';
 import {
+    isChatUnread,
+    mergeChatLists,
+    readLocalPinnedChatIds,
+    withChatMarkedRead,
+    writeLocalPinnedChatIds,
+} from './sduiChatListUtils';
+import {
     canWriteToChat,
     extractNewsId,
     getChatName,
-    getChatPreview,
-    getChatTimestamp,
     getLinkedNews,
     getMessageChatId,
     getMessageDateTime,
@@ -61,8 +67,23 @@ type SduiChatItem = any;
 type SduiMessage = any;
 type SduiNews = any;
 
-export function SduiChat() {
+const CHAT_POLL_INTERVAL_MS = 45_000;
+
+interface SduiChatProps {
+    /** Called whenever the number of unread chats changes. */
+    onUnreadCountChange?: (unreadChats: number) => void;
+}
+
+export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
     const [chats, setChats] = useState<SduiChatItem[]>([]);
+    const [chatSearchQuery, setChatSearchQuery] = useState<string>('');
+    const [chatFilter, setChatFilter] = useState<'all' | 'unread'>('all');
+    const [localPinnedIds, setLocalPinnedIds] = useState<string[]>(() =>
+        readLocalPinnedChatIds(),
+    );
+    const [failedAvatarIds, setFailedAvatarIds] = useState<
+        Record<string, true>
+    >({});
     const [isAuthenticated, setIsAuthenticated] = useState<boolean>(true);
     const [loading, setLoading] = useState<boolean>(true);
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -144,6 +165,50 @@ export function SduiChat() {
         () => (selectedChat ? getMessageChatId(selectedChat) : ''),
         [selectedChat],
     );
+    const selectedChatRef = useRef<SduiChatItem | null>(null);
+    useEffect(() => {
+        selectedChatRef.current = selectedChat;
+    }, [selectedChat]);
+
+    // Only pins set in Periodix lift a chat to the top. SDUI's own pins
+    // (meta.is_pinned) are deliberately ignored so they don't force order.
+    const isChatPinned = useCallback(
+        (chat: SduiChatItem) =>
+            localPinnedIds.includes(getMessageChatId(chat)),
+        [localPinnedIds],
+    );
+    const toggleLocalPin = useCallback((chat: SduiChatItem) => {
+        const chatId = getMessageChatId(chat);
+        if (!chatId) return;
+        setLocalPinnedIds((current) => {
+            const next = current.includes(chatId)
+                ? current.filter((id) => id !== chatId)
+                : [chatId, ...current];
+            writeLocalPinnedChatIds(next);
+            return next;
+        });
+    }, []);
+    const unreadChatCount = useMemo(
+        () => chats.filter((chat) => isChatUnread(chat)).length,
+        [chats],
+    );
+    useEffect(() => {
+        onUnreadCountChange?.(unreadChatCount);
+    }, [onUnreadCountChange, unreadChatCount]);
+    const { pinnedChats, otherChats } = useMemo(() => {
+        const query = normalizeTextForComparison(chatSearchQuery);
+        const visible = chats.filter((chat) => {
+            if (chatFilter === 'unread' && !isChatUnread(chat)) return false;
+            if (!query) return true;
+            return normalizeTextForComparison(
+                `${getChatName(chat)} ${chat?.meta?.subtitle ?? ''}`,
+            ).includes(query);
+        });
+        return {
+            pinnedChats: visible.filter((chat) => isChatPinned(chat)),
+            otherChats: visible.filter((chat) => !isChatPinned(chat)),
+        };
+    }, [chatFilter, chatSearchQuery, chats, isChatPinned]);
     const isSduiDevMode = useMemo(() => isSduiDeveloperModeEnabled(), []);
     const oneWayDetected = useMemo(
         () =>
@@ -347,8 +412,33 @@ export function SduiChat() {
         }
 
         const body = await res.json();
-        setChats(normalizeArrayResponse(body));
+        setChats(mergeChatLists([], normalizeArrayResponse(body)));
         setIsAuthenticated(true);
+    }, []);
+
+    // Marks the chat read in SDUI too, so the official app's badge clears.
+    const markChatRead = useCallback(async (chat: SduiChatItem) => {
+        const chatId = getMessageChatId(chat);
+        if (!chatId || !isChatUnread(chat)) return;
+
+        setChats((current) =>
+            current.map((candidate) =>
+                getMessageChatId(candidate) === chatId
+                    ? withChatMarkedRead(candidate)
+                    : candidate,
+            ),
+        );
+
+        try {
+            const token = localStorage.getItem('token');
+            await fetch(`/api/sdui/chats/${encodeURIComponent(chatId)}/read`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+            });
+        } catch (error) {
+            // Not critical: the next poll shows the real state again.
+            console.error(error);
+        }
     }, []);
 
     const loadNewsPage = useCallback(async (page: number): Promise<number> => {
@@ -542,6 +632,25 @@ export function SduiChat() {
         [ensureNewsForMessages, scrollToBottom],
     );
 
+    // Merge the newest page into the loaded history without resetting scroll.
+    const refreshLatestMessages = useCallback(
+        async (chat: SduiChatItem) => {
+            const chatId = getMessageChatId(chat);
+            if (!chatId) return;
+            const token = localStorage.getItem('token');
+            const res = await fetch(
+                `/api/sdui/chats/${encodeURIComponent(chatId)}/messages?page=1`,
+                { headers: { Authorization: `Bearer ${token}` } },
+            );
+            if (!res.ok) return;
+            const incoming = normalizeArrayResponse(await res.json());
+            if (getMessageChatId(selectedChatRef.current) !== chatId) return;
+            setMessages((prev) => mergeUniqueMessages(prev, incoming));
+            await ensureNewsForMessages(incoming);
+        },
+        [ensureNewsForMessages],
+    );
+
     const jumpToMessageByUuid = useCallback(
         async (targetMessageUuid: string) => {
             if (!targetMessageUuid) return;
@@ -633,6 +742,51 @@ export function SduiChat() {
         });
     }, [bootstrap]);
 
+    // Keep the list in step with the official app: refresh the first page
+    // (SDUI sorts by activity) while the tab is visible. If the open chat
+    // got new messages, pull them in and mark the chat read again.
+    useEffect(() => {
+        if (loading || !isAuthenticated) return;
+
+        let cancelled = false;
+        const poll = async () => {
+            if (document.visibilityState !== 'visible') return;
+            try {
+                const token = localStorage.getItem('token');
+                const res = await fetch('/api/sdui/chats?page=1', {
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (!res.ok || cancelled) return;
+                const fresh = normalizeArrayResponse(await res.json());
+                setChats((current) => mergeChatLists(current, fresh));
+
+                const openChat = selectedChatRef.current;
+                if (!openChat) return;
+                const openChatId = getMessageChatId(openChat);
+                const freshOpenChat = fresh.find(
+                    (chat) => getMessageChatId(chat) === openChatId,
+                );
+                if (freshOpenChat && isChatUnread(freshOpenChat)) {
+                    await refreshLatestMessages(openChat);
+                    if (!cancelled) void markChatRead(freshOpenChat);
+                }
+            } catch (error) {
+                console.error(error);
+            }
+        };
+
+        const intervalId = window.setInterval(poll, CHAT_POLL_INTERVAL_MS);
+        const onVisible = () => {
+            if (document.visibilityState === 'visible') void poll();
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+            cancelled = true;
+            window.clearInterval(intervalId);
+            document.removeEventListener('visibilitychange', onVisible);
+        };
+    }, [isAuthenticated, loading, markChatRead, refreshLatestMessages]);
+
     const handleAuth = async (e: React.FormEvent) => {
         e.preventDefault();
         setLoading(true);
@@ -705,6 +859,7 @@ export function SduiChat() {
     const handleSelectChat = async (chat: SduiChatItem) => {
         setActiveTab('chats');
         setSelectedChat(chat);
+        void markChatRead(chat);
         setSelectedChatDetails(null);
         setMessages([]);
         setMessageError(null);
@@ -1125,6 +1280,11 @@ export function SduiChat() {
                         }`}
                     >
                         Chats
+                        {unreadChatCount > 0 && (
+                            <span className="ml-1.5 rounded-full bg-sky-500 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white">
+                                {unreadChatCount}
+                            </span>
+                        )}
                     </button>
                     <button
                         type="button"
@@ -1160,69 +1320,31 @@ export function SduiChat() {
                 {activeTab === 'chats' ? (
                     <>
                         <aside
-                            className={`
-                    ${selectedChat ? 'hidden md:flex' : 'flex'}
-                    w-full md:w-[340px] lg:w-[380px] shrink-0 min-h-0 flex-col
-                    border-r border-slate-200 dark:border-slate-800
-                `}
+                            className={`${selectedChat ? 'hidden md:flex' : 'flex'} w-full md:w-[340px] lg:w-[380px] shrink-0 min-h-0 flex-col border-r border-slate-200 dark:border-slate-800`}
                         >
-                            <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain p-2 space-y-2">
-                                {errorMsg && (
-                                    <div className="rounded-md border border-red-200 bg-red-50 text-red-700 px-3 py-2 text-sm">
-                                        {errorMsg}
-                                    </div>
-                                )}
-
-                                {chats.length === 0 ? (
-                                    <div className="p-4 rounded-md border text-blue-800 border-blue-200 bg-blue-50 dark:bg-blue-950 dark:text-blue-200 dark:border-blue-900">
-                                        <p className="text-sm">
-                                            Keine Chats gefunden.
-                                        </p>
-                                    </div>
-                                ) : (
-                                    chats.map((chat, index) => {
-                                        const active =
-                                            selectedChat?.id === chat?.id;
-                                        const unread = Boolean(
-                                            chat?.meta?.is_unread,
-                                        );
-
-                                        return (
-                                            <button
-                                                key={chat?.id || index}
-                                                onClick={() =>
-                                                    handleSelectChat(chat)
-                                                }
-                                                className={`
-                                            w-full text-left rounded-lg border px-3 py-2 transition-colors sdui-animate-stagger
-                                        ${
-                                            active
-                                                ? 'border-blue-300 bg-blue-100 dark:border-blue-700 dark:bg-blue-900/40'
-                                                : unread
-                                                  ? 'border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-900/20'
-                                                  : 'border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50'
-                                        }
-                                    `}
-                                                style={{
-                                                    animationDelay: `${Math.min(index, 10) * 24}ms`,
-                                                }}
-                                            >
-                                                <div className="flex items-start justify-between gap-2">
-                                                    <h3 className="min-w-0 font-semibold text-sm truncate">
-                                                        {getChatName(chat)}
-                                                    </h3>
-                                                    <span className="text-[10px] text-slate-400 dark:text-slate-500 shrink-0">
-                                                        {getChatTimestamp(chat)}
-                                                    </span>
-                                                </div>
-                                                <p className="text-xs mt-1 leading-snug text-slate-500 dark:text-slate-400 line-clamp-2">
-                                                    {getChatPreview(chat)}
-                                                </p>
-                                            </button>
-                                        );
-                                    })
-                                )}
-                            </div>
+                            <SduiChatList
+                                pinnedChats={pinnedChats}
+                                otherChats={otherChats}
+                                totalChats={chats.length}
+                                unreadChatCount={unreadChatCount}
+                                selectedChatId={selectedChatId}
+                                searchQuery={chatSearchQuery}
+                                filter={chatFilter}
+                                errorMsg={errorMsg}
+                                failedAvatarIds={failedAvatarIds}
+                                onSearchChange={setChatSearchQuery}
+                                onFilterChange={setChatFilter}
+                                onSelectChat={(chat) => {
+                                    void handleSelectChat(chat);
+                                }}
+                                onAvatarError={(chatId) =>
+                                    setFailedAvatarIds((current) =>
+                                        current[chatId]
+                                            ? current
+                                            : { ...current, [chatId]: true },
+                                    )
+                                }
+                            />
                         </aside>
 
                         <section className="flex-1 min-w-0 flex flex-col bg-slate-50 dark:bg-slate-950 sdui-animate-tab">
@@ -1271,6 +1393,38 @@ export function SduiChat() {
                                                 </p>
                                             )}
                                         </div>
+                                        {(() => {
+                                            const pinned =
+                                                isChatPinned(selectedChat);
+                                            return (
+                                                <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                        toggleLocalPin(
+                                                            selectedChat,
+                                                        )
+                                                    }
+                                                    aria-pressed={pinned}
+                                                    aria-label={
+                                                        pinned
+                                                            ? 'Chat loesen'
+                                                            : 'Chat anheften'
+                                                    }
+                                                    title={
+                                                        pinned
+                                                            ? 'Chat loesen'
+                                                            : 'Chat anheften'
+                                                    }
+                                                    className={`ml-auto shrink-0 rounded-full p-2 transition-colors ${
+                                                        pinned
+                                                            ? 'text-sky-600 bg-sky-50 dark:text-sky-300 dark:bg-sky-500/15'
+                                                            : 'text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200'
+                                                    }`}
+                                                >
+                                                    <PinIcon className="h-4 w-4" />
+                                                </button>
+                                            );
+                                        })()}
                                     </header>
 
                                     <main
