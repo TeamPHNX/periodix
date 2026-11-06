@@ -371,6 +371,7 @@ export default function Timetable({
         }
     };
 
+    const hasData = !!data;
     useEffect(() => {
         function computeScale() {
             const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
@@ -408,7 +409,11 @@ export default function Timetable({
             const isTailwindSm = vw >= 640;
             const gapSize = isTailwindSm ? 12 : 4;
             const totalGaps = 4 * gapSize;
-            const availableWidth = vw - currentAxisWidth;
+            // Measure the timetable itself: the viewport also counts the page and
+            // card padding, which made the day view estimate ~60px too wide and
+            // lessons pick layouts that then got clipped.
+            const hostWidth = containerRef.current?.clientWidth || vw;
+            const availableWidth = hostWidth - currentAxisWidth;
             // Ensure we don't divide by zero or get negative
             const colWidth = Math.max(0, (availableWidth - totalGaps) / 5);
             setEstimatedDayWidth(colWidth);
@@ -419,8 +424,18 @@ export default function Timetable({
         // Verify dimensions on mount as initialLayout from useMemo might be based on stale/pre-standalone PWA dimensions
         computeScale();
         window.addEventListener('resize', computeScale);
-        return () => window.removeEventListener('resize', computeScale);
-    }, [totalMinutes]);
+        // The container also changes width without a window resize (e.g. once
+        // data replaces the skeleton, or a scrollbar appears)
+        const ro =
+            typeof ResizeObserver !== 'undefined' && containerRef.current
+                ? new ResizeObserver(() => computeScale())
+                : null;
+        if (ro && containerRef.current) ro.observe(containerRef.current);
+        return () => {
+            window.removeEventListener('resize', computeScale);
+            ro?.disconnect();
+        };
+    }, [totalMinutes, hasData]);
 
     // Memoized by time value: a fresh Date each render made `days` and everything
     // derived from it (lessonsByDay, ...) recompute on every render, even mid-swipe
@@ -661,7 +676,6 @@ export default function Timetable({
         lastNavigationTimeRef.current = Date.now();
     }, [weekStart]);
 
-    const hasData = !!data;
     const [gestureAttachAttempts, setGestureAttachAttempts] = useState(0);
     useEffect(() => {
         const el = containerRef.current;

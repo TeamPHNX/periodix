@@ -1,7 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export type SduiAttachment = {
+    /** The original file. Used for downloads and the full-screen view. */
     url: string;
+    /**
+     * A downscaled copy for inline display when SDUI provides one
+     * (`medium_uri`, about 768px on the long side instead of the
+     * multi-megabyte original).
+     */
+    previewUrl?: string;
     name: string;
     mime: string;
     size: number | null;
@@ -378,6 +385,14 @@ export function extractMessageAttachments(source: any): SduiAttachment[] {
             node?.mime || node?.mimetype || node?.content_type || '',
         ).trim();
 
+        const previewCandidate = [node?.medium_uri, node?.meta?.medium_uri].find(
+            (value) =>
+                typeof value === 'string' && /^https?:\/\//i.test(value.trim()),
+        );
+        const previewUrl = previewCandidate
+            ? String(previewCandidate).trim()
+            : undefined;
+
         const contextualNameCandidates = attachmentPathHint
             ? [node?.title, node?.meta?.title, node?.meta?.displayname]
             : [];
@@ -446,6 +461,7 @@ export function extractMessageAttachments(source: any): SduiAttachment[] {
 
         const attachment: SduiAttachment = {
             url,
+            previewUrl,
             name,
             mime,
             size,
@@ -479,6 +495,7 @@ export function extractMessageAttachments(source: any): SduiAttachment[] {
         bucket.set(dedupeKey, {
             ...existing,
             url: preferredUrl,
+            previewUrl: existing.previewUrl || attachment.previewUrl,
             name: pickBetterAttachmentName(existing.name, attachment.name),
             mime: existing.mime || attachment.mime,
             size: existing.size ?? attachment.size,

@@ -49,6 +49,7 @@ export type Lesson = {
     activityType?: string;
     info?: string; // Additional lesson information
     lstext?: string; // Additional lesson text (notes)
+    sg?: string; // Untis student group, e.g. "EXAM_2893" for exam slots
     substText?: string; // Substitution text from Untis, e.g. "Arbeitsauftrag"
     // Set on merged blocks: the hours they were built from, so notes that
     // differ per hour can still be shown separately

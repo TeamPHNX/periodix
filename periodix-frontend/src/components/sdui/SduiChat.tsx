@@ -2,24 +2,20 @@
 import React, {
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
 } from 'react';
-import { SduiMessageActionsMenu } from './SduiMessageActionsMenu';
 import { SduiDeleteConfirmModal } from './SduiDeleteConfirmModal';
 import { SduiMessageInfoModal } from './SduiMessageInfoModal';
 import { SduiDevPanel } from './SduiDevPanel';
 import { PinIcon, SduiChatList } from './SduiChatList';
 import { SduiRawJsonBlock, isSduiDeveloperModeEnabled } from './SduiDevTools';
-import {
-    extractImageUrls,
-    getImageDedupeKey,
-    extractMessageAttachments,
-    formatFileSize,
-    getAttachmentDisplayName,
-    looksLikeAttachmentPathText,
-} from './sduiAttachmentUtils';
+import { SduiImageLightbox, type SduiLightboxImage } from './SduiImageLightbox';
+import { SduiMessageList, type SduiMessageActions } from './SduiMessageList';
+import { buildMessageSections } from './sduiMessageGrouping';
+import { extractImageUrls } from './sduiAttachmentUtils';
 import { renderTextWithLinks } from './sduiLinkText';
 import {
     isChatUnread,
@@ -35,8 +31,6 @@ import {
     getLinkedNews,
     getMessageChatId,
     getMessageDateTime,
-    getMessageDeletePermission,
-    getMessageInfoPermission,
     getMessageKey,
     getMessageSender,
     getMessageText,
@@ -54,13 +48,10 @@ import {
     getReplyPreviewForMessage,
     hasOneWayRestrictionSignal,
     indexNewsList,
-    isDeletedMessage,
-    isInfoMessage,
     mergeUniqueMessages,
     normalizeArrayResponse,
     normalizeReaderList,
     normalizeTextForComparison,
-    shouldHideDuplicateAttachmentText,
 } from './sduiChatUtils';
 
 type SduiChatItem = any;
@@ -103,9 +94,8 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
     const [hiddenImageUrls, setHiddenImageUrls] = useState<
         Record<string, true>
     >({});
-    const [lightboxImageUrl, setLightboxImageUrl] = useState<string | null>(
-        null,
-    );
+    const [lightboxImage, setLightboxImage] =
+        useState<SduiLightboxImage | null>(null);
     const [newsPage, setNewsPage] = useState<number>(0);
     const [hasMoreNews, setHasMoreNews] = useState<boolean>(true);
     const [loadingNews, setLoadingNews] = useState<boolean>(false);
@@ -156,10 +146,33 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
     const visualViewportBaseHeightRef = useRef<number>(0);
     const messagePageRef = useRef<number>(1);
     const hasMoreMessagesRef = useRef<boolean>(true);
-    const messageElementsRef = useRef<Record<string, HTMLDivElement | null>>(
+    const messageElementsRef = useRef<Record<string, HTMLElement | null>>(
         {},
     );
     const replyHighlightTimeoutRef = useRef<number | null>(null);
+    const composerRef = useRef<HTMLTextAreaElement | null>(null);
+
+    // Grow the composer with its content (up to the CSS max-height), and
+    // shrink it back when the draft is cleared after sending.
+    const resizeComposer = useCallback(
+        (el: HTMLTextAreaElement | null = composerRef.current) => {
+            if (!el) return;
+            el.style.height = 'auto';
+            const border = el.offsetHeight - el.clientHeight;
+            el.style.height = `${el.scrollHeight + border}px`;
+        },
+        [],
+    );
+    const setComposerRef = useCallback(
+        (el: HTMLTextAreaElement | null) => {
+            composerRef.current = el;
+            resizeComposer(el);
+        },
+        [resizeComposer],
+    );
+    useLayoutEffect(() => {
+        resizeComposer();
+    }, [draft, resizeComposer]);
 
     const selectedChatId = useMemo(
         () => (selectedChat ? getMessageChatId(selectedChat) : ''),
@@ -242,6 +255,36 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
         }
         return index;
     }, [messages]);
+    const messageSections = useMemo(
+        () => buildMessageSections(messages),
+        [messages],
+    );
+    // Per-message lookups computed once per messages/news change, so the
+    // memoized bubbles receive the same objects while the user types.
+    const messageLookups = useMemo(() => {
+        const linkedNewsByKey: Record<string, SduiNews | null> = {};
+        const replyPreviewByKey: Record<
+            string,
+            ReturnType<typeof getReplyPreviewForMessage>
+        > = {};
+        for (const message of messages) {
+            const key = getMessageKey(message);
+            linkedNewsByKey[key] = getLinkedNews(message, newsById);
+            replyPreviewByKey[key] = getReplyPreviewForMessage(
+                message,
+                messageByUuid,
+                newsById,
+            );
+        }
+        return { linkedNewsByKey, replyPreviewByKey };
+    }, [messages, messageByUuid, newsById]);
+    // "New messages" button: messages that arrived while scrolled up.
+    const [unseenMessageCount, setUnseenMessageCount] = useState(0);
+    const [isAwayFromBottom, setIsAwayFromBottom] = useState(false);
+    const newestMessageTimestampRef = useRef(0);
+    const [expandedInfoGroups, setExpandedInfoGroups] = useState<
+        Record<string, boolean>
+    >({});
     const scrollAndHighlightMessageByKey = useCallback((targetKey: string) => {
         const targetElement = messageElementsRef.current[targetKey];
         if (!targetElement) return false;
@@ -295,12 +338,12 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
     }, [deleteTargetMessage, newsById]);
 
     useEffect(() => {
-        if (!lightboxImageUrl) return;
+        if (!lightboxImage) return;
 
         const previousOverflow = document.body.style.overflow;
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
-                setLightboxImageUrl(null);
+                setLightboxImage(null);
             }
         };
 
@@ -311,7 +354,7 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
             document.body.style.overflow = previousOverflow;
             window.removeEventListener('keydown', handleKeyDown);
         };
-    }, [lightboxImageUrl]);
+    }, [lightboxImage]);
 
     useEffect(() => {
         if (!messageInfoTarget) return;
@@ -494,37 +537,122 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
         [hasMoreNews, loadNewsPage, newsById, newsPage],
     );
 
+    const smoothScrollToBottomUntilRef = useRef(0);
+    // Content that grows afterwards (images, prepended pages) is kept at the
+    // bottom by the ResizeObserver below while shouldStickToBottomRef is set.
     const scrollToBottom = useCallback((smooth = false) => {
         const container = messagesContainerRef.current;
         if (!container) return;
 
         shouldStickToBottomRef.current = true;
-        const applyBottomPosition = () => {
-            container.scrollTop = container.scrollHeight;
-        };
-
-        if (smooth && messagesEndRef.current) {
-            messagesEndRef.current.scrollIntoView({
+        if (smooth) {
+            // The animation's own scroll events must not switch sticking
+            // off, or content growing meanwhile would leave it short.
+            smoothScrollToBottomUntilRef.current = performance.now() + 1000;
+            container.scrollTo({
+                top: container.scrollHeight,
                 behavior: 'smooth',
-                block: 'end',
             });
+        } else {
+            container.scrollTop = container.scrollHeight;
         }
-
-        requestAnimationFrame(() => {
-            applyBottomPosition();
-            requestAnimationFrame(applyBottomPosition);
-            window.setTimeout(applyBottomPosition, 120);
-        });
     }, []);
-    const stickToBottomIfNeeded = useCallback(() => {
-        if (!shouldStickToBottomRef.current) return;
-        scrollToBottom(false);
-    }, [scrollToBottom]);
 
-    React.useEffect(() => {
+    // Scroll anchoring: when content changes height (images loading, older
+    // pages prepended, news cards resolving), keep the topmost visible message
+    // at the same spot on screen, or stay at the bottom if the user was there.
+    // The browser's own overflow-anchor is turned off on the container so the
+    // two don't fight; Safari doesn't implement it anyway.
+    const scrollAnchorRef = useRef<{
+        element: HTMLElement;
+        offset: number;
+    } | null>(null);
+    const contentResizeObserverRef = useRef<ResizeObserver | null>(null);
+
+    const captureScrollAnchor = useCallback(() => {
+        const container = messagesContainerRef.current;
+        if (!container) return;
+        const containerTop = container.getBoundingClientRect().top;
+        let anchor: { element: HTMLElement; offset: number } | null = null;
+        for (const element of Object.values(messageElementsRef.current)) {
+            if (!element) continue;
+            const rect = element.getBoundingClientRect();
+            if (rect.bottom <= containerTop) continue;
+            const offset = rect.top - containerTop;
+            if (!anchor || offset < anchor.offset) {
+                anchor = { element, offset };
+            }
+        }
+        scrollAnchorRef.current = anchor;
+    }, []);
+
+    // Pin an element (e.g. a group's expand button the user just clicked) so
+    // the content it reveals grows downwards instead of shifting the view.
+    const anchorScrollToElement = useCallback((element: HTMLElement) => {
+        const container = messagesContainerRef.current;
+        if (!container) return;
+        scrollAnchorRef.current = {
+            element,
+            offset:
+                element.getBoundingClientRect().top -
+                container.getBoundingClientRect().top,
+        };
+    }, []);
+
+    const restoreScrollAnchor = useCallback(() => {
+        const container = messagesContainerRef.current;
+        if (!container) return;
+        if (shouldStickToBottomRef.current) {
+            container.scrollTop = container.scrollHeight;
+            return;
+        }
+        const anchor = scrollAnchorRef.current;
+        if (!anchor || !anchor.element.isConnected) return;
+        const offset =
+            anchor.element.getBoundingClientRect().top -
+            container.getBoundingClientRect().top;
+        const delta = offset - anchor.offset;
+        if (Math.abs(delta) >= 1) {
+            container.scrollTop += delta;
+        }
+    }, []);
+
+    // Callback ref for the message list: watches the list (content height)
+    // and its scroll container (viewport height, e.g. the mobile keyboard).
+    const setMessagesContentRef = useCallback(
+        (element: HTMLDivElement | null) => {
+            contentResizeObserverRef.current?.disconnect();
+            contentResizeObserverRef.current = null;
+            if (!element || typeof ResizeObserver === 'undefined') return;
+            const observer = new ResizeObserver(restoreScrollAnchor);
+            observer.observe(element);
+            if (element.parentElement) observer.observe(element.parentElement);
+            contentResizeObserverRef.current = observer;
+        },
+        [restoreScrollAnchor],
+    );
+
+    // Layout effect: jump to the bottom in the same commit that renders the
+    // messages. Otherwise a scroll event from before the jump (scrollTop near
+    // 0 with the new content) reaches handleMessagesScroll, which would turn
+    // off sticking and load an older page nobody scrolled to.
+    useLayoutEffect(() => {
         messagesRef.current = messages;
+
+        const previousNewest = newestMessageTimestampRef.current;
+        let newest = previousNewest;
+        let arrived = 0;
+        for (const message of messages) {
+            const timestamp = getMessageTimestamp(message);
+            if (timestamp > newest) newest = timestamp;
+            if (previousNewest && timestamp > previousNewest) arrived += 1;
+        }
+        newestMessageTimestampRef.current = newest;
+
         if (shouldStickToBottomRef.current) {
             scrollToBottom(false);
+        } else if (arrived > 0) {
+            setUnseenMessageCount((count) => count + arrived);
         }
     }, [messages, scrollToBottom]);
 
@@ -596,22 +724,13 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
                     shouldStickToBottomRef.current = true;
                     scrollToBottom(false);
                 } else {
-                    const container = messagesContainerRef.current;
-                    const previousHeight = container?.scrollHeight ?? 0;
-
+                    // Prepending older messages: scroll anchoring keeps the
+                    // messages on screen in place.
                     setMessages((prev) => mergeUniqueMessages(prev, incoming));
                     setMessagePage(page);
                     setHasMoreMessages(
                         incoming.length > 0 && uniqueIncomingCount > 0,
                     );
-
-                    requestAnimationFrame(() => {
-                        if (container) {
-                            const nextHeight = container.scrollHeight;
-                            const delta = nextHeight - previousHeight;
-                            container.scrollTop = container.scrollTop + delta;
-                        }
-                    });
                 }
 
                 await ensureNewsForMessages(incoming);
@@ -876,6 +995,9 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
         setMessagePage(1);
         setHasMoreMessages(true);
         setLoadingOlderMessages(false);
+        setUnseenMessageCount(0);
+        setIsAwayFromBottom(false);
+        newestMessageTimestampRef.current = 0;
         shouldStickToBottomRef.current = true;
         await Promise.all([
             loadMessagesPage(chat, 1, 'replace', true),
@@ -889,7 +1011,15 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
         const element = event.currentTarget;
         const distanceFromBottom =
             element.scrollHeight - element.scrollTop - element.clientHeight;
-        shouldStickToBottomRef.current = distanceFromBottom <= 96;
+        shouldStickToBottomRef.current =
+            distanceFromBottom <= 96 ||
+            performance.now() < smoothScrollToBottomUntilRef.current;
+        captureScrollAnchor();
+        const awayFromBottom = distanceFromBottom > 240;
+        setIsAwayFromBottom((current) =>
+            current === awayFromBottom ? current : awayFromBottom,
+        );
+        if (distanceFromBottom <= 96) setUnseenMessageCount(0);
 
         if (
             !selectedChat ||
@@ -901,7 +1031,9 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
             return;
         }
 
-        if (element.scrollTop > 40) {
+        // Start loading the previous page well before the top is reached,
+        // so scrolling up rarely has to wait.
+        if (element.scrollTop > 600) {
             return;
         }
 
@@ -1145,6 +1277,62 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
             setSending(false);
         }
     };
+
+    const registerMessageElement = useCallback(
+        (messageKey: string, element: HTMLElement | null) => {
+            if (element) {
+                messageElementsRef.current[messageKey] = element;
+            } else {
+                delete messageElementsRef.current[messageKey];
+            }
+        },
+        [],
+    );
+    const messageActions = useMemo<SduiMessageActions>(
+        () => ({
+            toggleMenu: (messageKey) =>
+                setOpenMessageMenuKey((current) =>
+                    current === messageKey ? null : messageKey,
+                ),
+            reply: (message) => {
+                setReplyToMessage(message);
+                setOpenMessageMenuKey(null);
+            },
+            copy: (message) => {
+                void handleCopyMessageText(message);
+                setOpenMessageMenuKey(null);
+            },
+            info: (message) => {
+                void handleOpenMessageInfo(message);
+            },
+            requestDelete: handleRequestDeleteMessage,
+            jumpToMessage: (messageUuid) => {
+                void jumpToMessageByUuid(messageUuid);
+            },
+            openImage: (url, previewUrl) =>
+                setLightboxImage({ url, previewUrl }),
+            hideImage: (url) =>
+                setHiddenImageUrls((prev) =>
+                    prev[url] ? prev : { ...prev, [url]: true },
+                ),
+            registerElement: registerMessageElement,
+            toggleInfoGroup: (groupKey, anchor) => {
+                anchorScrollToElement(anchor);
+                setExpandedInfoGroups((current) => ({
+                    ...current,
+                    [groupKey]: !current[groupKey],
+                }));
+            },
+        }),
+        [
+            anchorScrollToElement,
+            handleCopyMessageText,
+            handleOpenMessageInfo,
+            handleRequestDeleteMessage,
+            jumpToMessageByUuid,
+            registerMessageElement,
+        ],
+    );
 
     if (loading) {
         return (
@@ -1430,7 +1618,7 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
                                     <main
                                         ref={messagesContainerRef}
                                         onScroll={handleMessagesScroll}
-                                        className="flex-1 overflow-y-auto p-4 space-y-3"
+                                        className="flex-1 overflow-y-auto px-4 pb-4 [overflow-anchor:none]"
                                     >
                                         {showInitialMessagesSpinner ? (
                                             <div className="h-full flex items-center justify-center">
@@ -1446,604 +1634,85 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
                                                 Chat.
                                             </div>
                                         ) : (
-                                            messages.map((message) => {
-                                                const messageKey =
-                                                    getMessageKey(message);
-                                                const messageUuid =
-                                                    getMessageUuid(message);
-                                                const actionKey =
-                                                    typeof message?.content ===
-                                                    'string'
-                                                        ? message.content.trim()
-                                                        : '';
-                                                const info =
-                                                    isInfoMessage(message);
-                                                const linkedNews =
-                                                    getLinkedNews(
-                                                        message,
-                                                        newsById,
-                                                    );
-                                                const messageText =
-                                                    getMessageText(
-                                                        message,
-                                                        linkedNews,
-                                                    );
-                                                const newsTitle =
-                                                    getNewsTitle(linkedNews);
-                                                const newsBody =
-                                                    getNewsBody(linkedNews);
-                                                const newsImages =
-                                                    extractImageUrls(
-                                                        linkedNews,
-                                                    );
-                                                const newsImageKeys = new Set(
-                                                    newsImages.map((src) =>
-                                                        getImageDedupeKey(src),
-                                                    ),
-                                                );
-                                                const messageAttachments =
-                                                    extractMessageAttachments(
-                                                        message,
-                                                    );
-                                                const visibleImageAttachments =
-                                                    messageAttachments.filter(
-                                                        (attachment) => {
-                                                            if (
-                                                                !attachment.isImage
-                                                            ) {
-                                                                return false;
-                                                            }
-
-                                                            if (
-                                                                hiddenImageUrls[
-                                                                    attachment
-                                                                        .url
-                                                                ]
-                                                            ) {
-                                                                return false;
-                                                            }
-
-                                                            if (
-                                                                actionKey !==
-                                                                'news.posted'
-                                                            ) {
-                                                                return true;
-                                                            }
-
-                                                            return !newsImageKeys.has(
-                                                                getImageDedupeKey(
-                                                                    attachment.url,
-                                                                ),
-                                                            );
-                                                        },
-                                                    );
-                                                const visibleNewsImages =
-                                                    newsImages.filter(
-                                                        (src) =>
-                                                            !hiddenImageUrls[
-                                                                src
-                                                            ],
-                                                    );
-                                                const singleNewsImage =
-                                                    visibleNewsImages.length ===
-                                                    1;
-                                                const fileAttachments =
-                                                    messageAttachments.filter(
-                                                        (attachment) =>
-                                                            !attachment.isImage,
-                                                    );
-                                                const singleAttachmentImage =
-                                                    visibleImageAttachments.length ===
-                                                    1;
-                                                const messageIsDeleted =
-                                                    isDeletedMessage(message);
-                                                const replyReferencePreview =
-                                                    getReplyPreviewForMessage(
-                                                        message,
-                                                        messageByUuid,
-                                                        newsById,
-                                                    );
-                                                const hideDuplicateAttachmentTitleText =
-                                                    shouldHideDuplicateAttachmentText(
-                                                        messageText,
-                                                        fileAttachments,
-                                                    );
-                                                const hideAttachmentLikeMessageText =
-                                                    (visibleImageAttachments.length >
-                                                        0 ||
-                                                        fileAttachments.length >
-                                                            0) &&
-                                                    (looksLikeAttachmentPathText(
-                                                        messageText,
-                                                    ) ||
-                                                        hideDuplicateAttachmentTitleText);
-                                                const showMessageText =
-                                                    Boolean(messageText) &&
-                                                    !hideAttachmentLikeMessageText;
-                                                const canReplyToMessage =
-                                                    canWriteInSelectedChat &&
-                                                    !info &&
-                                                    !messageIsDeleted &&
-                                                    Boolean(messageUuid);
-                                                const canDeleteMessage =
-                                                    !messageIsDeleted &&
-                                                    getMessageDeletePermission(
-                                                        message,
-                                                        canWriteInSelectedChat,
-                                                    ) &&
-                                                    Boolean(messageUuid);
-                                                const canViewMessageInfo =
-                                                    getMessageInfoPermission(
-                                                        message,
-                                                    ) && Boolean(messageUuid);
-                                                const canCopyMessage =
-                                                    !messageIsDeleted &&
-                                                    showMessageText;
-                                                const hasMenuActions =
-                                                    canReplyToMessage ||
-                                                    canCopyMessage ||
-                                                    canViewMessageInfo ||
-                                                    canDeleteMessage;
-                                                const isDeletingThisMessage =
-                                                    deletingMessageKey ===
-                                                    messageKey;
-                                                const isCopiedThisMessage =
-                                                    copiedMessageKey ===
-                                                    messageKey;
-                                                const canJumpToReplyReference =
-                                                    Boolean(
-                                                        replyReferencePreview?.uuid,
-                                                    );
-                                                const isHighlightedMessage =
-                                                    highlightedMessageKey ===
-                                                    messageKey;
-                                                const linkClassName = info
-                                                    ? 'underline decoration-amber-400/80 underline-offset-2 text-amber-800 dark:text-amber-200 hover:text-amber-900 dark:hover:text-amber-100'
-                                                    : 'underline decoration-blue-400/80 underline-offset-2 text-blue-700 dark:text-blue-300 hover:text-blue-800 dark:hover:text-blue-200';
-
-                                                return (
-                                                    <div
-                                                        key={messageKey}
-                                                        ref={(element) => {
-                                                            if (element) {
-                                                                messageElementsRef.current[
-                                                                    messageKey
-                                                                ] = element;
-                                                            } else {
-                                                                delete messageElementsRef
-                                                                    .current[
-                                                                    messageKey
-                                                                ];
-                                                            }
-                                                        }}
-                                                        className={`max-w-[90%] rounded-2xl border px-3 py-2 transition-all duration-300 ${
-                                                            info
-                                                                ? 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20'
-                                                                : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800'
-                                                        } ${
-                                                            isHighlightedMessage
-                                                                ? 'ring-2 ring-sky-400/90 dark:ring-sky-500/90 shadow-[0_0_0_4px_rgba(14,165,233,0.16)]'
-                                                                : ''
-                                                        }`}
-                                                    >
-                                                        <div className="flex items-center justify-between gap-4 mb-1">
-                                                            <span
-                                                                className={`text-xs font-semibold ${
-                                                                    info
-                                                                        ? 'text-amber-700 dark:text-amber-300'
-                                                                        : 'text-blue-600 dark:text-blue-400'
-                                                                }`}
-                                                            >
-                                                                {getMessageSender(
-                                                                    message,
-                                                                )}
-                                                            </span>
-                                                            <div className="flex items-center gap-1">
-                                                                <span className="text-[10px] text-slate-400 dark:text-slate-500">
-                                                                    {getMessageTime(
-                                                                        message,
-                                                                    )}
-                                                                </span>
-                                                                <SduiMessageActionsMenu
-                                                                    hasMenuActions={
-                                                                        hasMenuActions
-                                                                    }
-                                                                    isOpen={
-                                                                        openMessageMenuKey ===
-                                                                        messageKey
-                                                                    }
-                                                                    canReplyToMessage={
-                                                                        canReplyToMessage
-                                                                    }
-                                                                    canCopyMessage={
-                                                                        canCopyMessage
-                                                                    }
-                                                                    canViewMessageInfo={
-                                                                        canViewMessageInfo
-                                                                    }
-                                                                    canDeleteMessage={
-                                                                        canDeleteMessage
-                                                                    }
-                                                                    isCopiedThisMessage={
-                                                                        isCopiedThisMessage
-                                                                    }
-                                                                    isDeletingThisMessage={
-                                                                        isDeletingThisMessage
-                                                                    }
-                                                                    onToggle={(
-                                                                        event,
-                                                                    ) => {
-                                                                        event.stopPropagation();
-                                                                        setOpenMessageMenuKey(
-                                                                            (
-                                                                                current,
-                                                                            ) =>
-                                                                                current ===
-                                                                                messageKey
-                                                                                    ? null
-                                                                                    : messageKey,
-                                                                        );
-                                                                    }}
-                                                                    onReply={() => {
-                                                                        setReplyToMessage(
-                                                                            message,
-                                                                        );
-                                                                        setOpenMessageMenuKey(
-                                                                            null,
-                                                                        );
-                                                                    }}
-                                                                    onCopy={() => {
-                                                                        void handleCopyMessageText(
-                                                                            message,
-                                                                        );
-                                                                        setOpenMessageMenuKey(
-                                                                            null,
-                                                                        );
-                                                                    }}
-                                                                    onInfo={() => {
-                                                                        void handleOpenMessageInfo(
-                                                                            message,
-                                                                        );
-                                                                    }}
-                                                                    onDelete={() => {
-                                                                        handleRequestDeleteMessage(
-                                                                            message,
-                                                                        );
-                                                                    }}
-                                                                />
-                                                            </div>
-                                                        </div>
-
-                                                        {replyReferencePreview && (
-                                                            <button
-                                                                type="button"
-                                                                onClick={() => {
-                                                                    if (
-                                                                        replyReferencePreview.uuid
-                                                                    ) {
-                                                                        jumpToMessageByUuid(
-                                                                            replyReferencePreview.uuid,
-                                                                        );
-                                                                    }
-                                                                }}
-                                                                disabled={
-                                                                    !canJumpToReplyReference
-                                                                }
-                                                                className={`mb-2 w-full rounded-xl border border-slate-200/90 dark:border-slate-700/80 bg-linear-to-br from-slate-50 via-slate-50 to-indigo-50/60 dark:from-slate-900/70 dark:via-slate-900/65 dark:to-indigo-950/20 px-2.5 py-1.5 text-left transition ${
-                                                                    canJumpToReplyReference
-                                                                        ? 'cursor-pointer hover:border-slate-300 dark:hover:border-slate-600 hover:from-slate-100 hover:to-indigo-100/60 dark:hover:from-slate-800/80 dark:hover:to-indigo-900/30'
-                                                                        : 'cursor-default'
-                                                                }`}
-                                                            >
-                                                                <div className="text-[10px] font-semibold text-slate-600 dark:text-slate-300">
-                                                                    Antwort auf{' '}
-                                                                    {
-                                                                        replyReferencePreview.sender
-                                                                    }
-                                                                    {replyReferencePreview.time
-                                                                        ? ` • ${replyReferencePreview.time}`
-                                                                        : ''}
-                                                                    {canJumpToReplyReference
-                                                                        ? ' • Zum Original'
-                                                                        : ''}
-                                                                </div>
-                                                                <div className="mt-0.5 text-xs text-slate-700 dark:text-slate-200 line-clamp-2">
-                                                                    {replyReferencePreview.text ||
-                                                                        'Nachricht'}
-                                                                </div>
-                                                            </button>
-                                                        )}
-
-                                                        {showMessageText && (
-                                                            <div
-                                                                className={`text-sm whitespace-pre-wrap wrap-break-word ${
-                                                                    messageIsDeleted
-                                                                        ? 'italic text-slate-500 dark:text-slate-400'
-                                                                        : info
-                                                                          ? 'text-amber-900 dark:text-amber-100'
-                                                                          : 'text-slate-800 dark:text-slate-200'
-                                                                }`}
-                                                            >
-                                                                {renderTextWithLinks(
-                                                                    messageText,
-                                                                    linkClassName,
-                                                                )}
-                                                            </div>
-                                                        )}
-
-                                                        {visibleImageAttachments.length >
-                                                            0 && (
-                                                            <div
-                                                                className={`mt-2 ${
-                                                                    singleAttachmentImage
-                                                                        ? ''
-                                                                        : 'grid grid-cols-1 sm:grid-cols-2 gap-2'
-                                                                }`}
-                                                            >
-                                                                {visibleImageAttachments.map(
-                                                                    (
-                                                                        attachment,
-                                                                    ) => (
-                                                                        <div
-                                                                            key={`${messageKey}-${attachment.url}`}
-                                                                            className={`rounded-md overflow-hidden border border-slate-200/80 dark:border-slate-700/70 bg-slate-50 dark:bg-slate-900/50 ${
-                                                                                singleAttachmentImage
-                                                                                    ? 'w-full'
-                                                                                    : ''
-                                                                            }`}
-                                                                        >
-                                                                            <button
-                                                                                type="button"
-                                                                                onClick={() =>
-                                                                                    setLightboxImageUrl(
-                                                                                        attachment.url,
-                                                                                    )
-                                                                                }
-                                                                                className="block w-full"
-                                                                            >
-                                                                                <img
-                                                                                    src={
-                                                                                        attachment.url
-                                                                                    }
-                                                                                    alt={
-                                                                                        attachment.name
-                                                                                    }
-                                                                                    loading="lazy"
-                                                                                    className={`w-full bg-slate-100 dark:bg-slate-800 ${
-                                                                                        singleAttachmentImage
-                                                                                            ? 'h-auto max-h-112 object-contain'
-                                                                                            : 'h-36 object-cover'
-                                                                                    }`}
-                                                                                    onError={() => {
-                                                                                        setHiddenImageUrls(
-                                                                                            (
-                                                                                                prev,
-                                                                                            ) => {
-                                                                                                if (
-                                                                                                    prev[
-                                                                                                        attachment
-                                                                                                            .url
-                                                                                                    ]
-                                                                                                ) {
-                                                                                                    return prev;
-                                                                                                }
-                                                                                                return {
-                                                                                                    ...prev,
-                                                                                                    [attachment.url]: true,
-                                                                                                };
-                                                                                            },
-                                                                                        );
-                                                                                    }}
-                                                                                    onLoad={
-                                                                                        stickToBottomIfNeeded
-                                                                                    }
-                                                                                />
-                                                                            </button>
-                                                                            <a
-                                                                                href={
-                                                                                    attachment.url
-                                                                                }
-                                                                                target="_blank"
-                                                                                rel="noreferrer"
-                                                                                download={
-                                                                                    attachment.name
-                                                                                }
-                                                                                className="block px-2 py-1 text-xs text-blue-700 dark:text-blue-300 hover:underline truncate"
-                                                                                title={
-                                                                                    attachment.name
-                                                                                }
-                                                                            >
-                                                                                {getAttachmentDisplayName(
-                                                                                    attachment,
-                                                                                )}
-                                                                            </a>
-                                                                        </div>
-                                                                    ),
-                                                                )}
-                                                            </div>
-                                                        )}
-
-                                                        {fileAttachments.length >
-                                                            0 && (
-                                                            <div className="mt-2 space-y-1">
-                                                                {fileAttachments.map(
-                                                                    (
-                                                                        attachment,
-                                                                    ) => (
-                                                                        <a
-                                                                            key={`${messageKey}-${attachment.url}`}
-                                                                            href={
-                                                                                attachment.url
-                                                                            }
-                                                                            target="_blank"
-                                                                            rel="noreferrer"
-                                                                            download={
-                                                                                attachment.name
-                                                                            }
-                                                                            className="flex min-w-0 items-center justify-between gap-2 rounded-lg border border-emerald-200/80 dark:border-emerald-800/70 bg-linear-to-r from-emerald-50 to-cyan-50 dark:from-emerald-950/30 dark:to-cyan-950/25 px-2.5 py-2 transition hover:from-emerald-100 hover:to-cyan-100 dark:hover:from-emerald-900/35 dark:hover:to-cyan-900/35"
-                                                                        >
-                                                                            <div className="min-w-0 flex items-center gap-2">
-                                                                                <span className="shrink-0 flex h-5 w-5 items-center justify-center rounded-md bg-emerald-600 text-white">
-                                                                                    <svg
-                                                                                        className="h-3 w-3"
-                                                                                        viewBox="0 0 20 20"
-                                                                                        fill="currentColor"
-                                                                                        aria-hidden="true"
-                                                                                    >
-                                                                                        <path d="M10 2a.75.75 0 01.75.75v7.19l1.72-1.72a.75.75 0 111.06 1.06l-3 3a.75.75 0 01-1.06 0l-3-3a.75.75 0 011.06-1.06l1.72 1.72V2.75A.75.75 0 0110 2z" />
-                                                                                        <path d="M4.5 13.25a.75.75 0 00-1.5 0V15A2.5 2.5 0 005.5 17.5h9A2.5 2.5 0 0017 15v-1.75a.75.75 0 00-1.5 0V15a1 1 0 01-1 1h-9a1 1 0 01-1-1v-1.75z" />
-                                                                                    </svg>
-                                                                                </span>
-                                                                                <span
-                                                                                    className="min-w-0 text-xs font-medium text-emerald-900 dark:text-emerald-100 truncate"
-                                                                                    title={
-                                                                                        attachment.name
-                                                                                    }
-                                                                                >
-                                                                                    {getAttachmentDisplayName(
-                                                                                        attachment,
-                                                                                    )}
-                                                                                </span>
-                                                                            </div>
-                                                                            <span className="text-[10px] font-semibold text-cyan-700 dark:text-cyan-300 shrink-0">
-                                                                                {formatFileSize(
-                                                                                    attachment.size,
-                                                                                ) ||
-                                                                                    'Download'}
-                                                                            </span>
-                                                                        </a>
-                                                                    ),
-                                                                )}
-                                                            </div>
-                                                        )}
-
-                                                        {actionKey ===
-                                                            'news.posted' &&
-                                                            (newsTitle ||
-                                                                newsBody ||
-                                                                visibleNewsImages.length >
-                                                                    0) && (
-                                                                <div className="mt-2 rounded-lg border border-amber-300/60 dark:border-amber-700/60 bg-white/70 dark:bg-slate-900/40 p-2">
-                                                                    <div className="text-[11px] uppercase tracking-wide font-semibold text-amber-700 dark:text-amber-300 mb-1">
-                                                                        News-Inhalt
-                                                                    </div>
-                                                                    {newsTitle && (
-                                                                        <div className="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-1">
-                                                                            {
-                                                                                newsTitle
-                                                                            }
-                                                                        </div>
-                                                                    )}
-                                                                    {newsBody && (
-                                                                        <div className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap wrap-break-word">
-                                                                            {renderTextWithLinks(
-                                                                                newsBody,
-                                                                                'underline decoration-blue-400/70 underline-offset-2 text-blue-700 dark:text-blue-300 hover:text-blue-800 dark:hover:text-blue-200',
-                                                                            )}
-                                                                        </div>
-                                                                    )}
-                                                                    {visibleNewsImages.length >
-                                                                        0 && (
-                                                                        <div
-                                                                            className={`mt-2 ${
-                                                                                singleNewsImage
-                                                                                    ? ''
-                                                                                    : 'grid grid-cols-1 sm:grid-cols-2 gap-2'
-                                                                            }`}
-                                                                        >
-                                                                            {visibleNewsImages.map(
-                                                                                (
-                                                                                    src,
-                                                                                ) => (
-                                                                                    <button
-                                                                                        type="button"
-                                                                                        key={
-                                                                                            src
-                                                                                        }
-                                                                                        onClick={() =>
-                                                                                            setLightboxImageUrl(
-                                                                                                src,
-                                                                                            )
-                                                                                        }
-                                                                                        className={`block rounded-md overflow-hidden border border-amber-200/70 dark:border-amber-700/50 ${
-                                                                                            singleNewsImage
-                                                                                                ? 'w-full'
-                                                                                                : ''
-                                                                                        }`}
-                                                                                    >
-                                                                                        <img
-                                                                                            src={
-                                                                                                src
-                                                                                            }
-                                                                                            alt=""
-                                                                                            loading="lazy"
-                                                                                            className={`w-full bg-slate-100 dark:bg-slate-800 ${
-                                                                                                singleNewsImage
-                                                                                                    ? 'h-auto max-h-112 object-contain'
-                                                                                                    : 'h-36 object-cover'
-                                                                                            }`}
-                                                                                            onError={() => {
-                                                                                                setHiddenImageUrls(
-                                                                                                    (
-                                                                                                        prev,
-                                                                                                    ) => {
-                                                                                                        if (
-                                                                                                            prev[
-                                                                                                                src
-                                                                                                            ]
-                                                                                                        ) {
-                                                                                                            return prev;
-                                                                                                        }
-                                                                                                        return {
-                                                                                                            ...prev,
-                                                                                                            [src]: true,
-                                                                                                        };
-                                                                                                    },
-                                                                                                );
-                                                                                            }}
-                                                                                            onLoad={
-                                                                                                stickToBottomIfNeeded
-                                                                                            }
-                                                                                        />
-                                                                                    </button>
-                                                                                ),
-                                                                            )}
-                                                                        </div>
-                                                                    )}
-                                                                </div>
-                                                            )}
-
-                                                        {isSduiDevMode && (
-                                                            <div className="mt-2">
-                                                                <SduiRawJsonBlock
-                                                                    title="Raw Message / Linked News / Permissions"
-                                                                    data={{
-                                                                        message,
-                                                                        linkedNews,
-                                                                        attachments:
-                                                                            messageAttachments,
-                                                                        permissions:
-                                                                            message?.can,
-                                                                        replyPreview:
-                                                                            replyReferencePreview,
-                                                                    }}
-                                                                />
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                );
-                                            })
+                                            <SduiMessageList
+                                                sections={messageSections}
+                                                linkedNewsByKey={
+                                                    messageLookups.linkedNewsByKey
+                                                }
+                                                replyPreviewByKey={
+                                                    messageLookups.replyPreviewByKey
+                                                }
+                                                hiddenImageUrls={hiddenImageUrls}
+                                                expandedInfoGroups={
+                                                    expandedInfoGroups
+                                                }
+                                                canWriteInChat={
+                                                    canWriteInSelectedChat
+                                                }
+                                                openMenuKey={openMessageMenuKey}
+                                                copiedKey={copiedMessageKey}
+                                                deletingKey={deletingMessageKey}
+                                                highlightedKey={
+                                                    highlightedMessageKey
+                                                }
+                                                hasMoreMessages={hasMoreMessages}
+                                                loadingOlderMessages={
+                                                    loadingOlderMessages
+                                                }
+                                                devMode={isSduiDevMode}
+                                                actions={messageActions}
+                                                contentRef={
+                                                    setMessagesContentRef
+                                                }
+                                            />
                                         )}
                                         <div ref={messagesEndRef} />
                                     </main>
 
                                     <footer
-                                        className={`border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 pt-3 ${
+                                        className={`relative border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 pt-3 ${
                                             shouldCompactComposerSpacing
                                                 ? 'pb-3'
                                                 : 'pb-[calc(env(safe-area-inset-bottom)+0.75rem)]'
                                         } md:p-3`}
                                     >
+                                        {(isAwayFromBottom ||
+                                            unseenMessageCount > 0) && (
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setUnseenMessageCount(0);
+                                                    scrollToBottom(true);
+                                                }}
+                                                aria-label={
+                                                    unseenMessageCount > 0
+                                                        ? `${unseenMessageCount} neue Nachrichten, zum Ende springen`
+                                                        : 'Zum Ende springen'
+                                                }
+                                                className="absolute right-4 bottom-full mb-3 z-20 flex h-10 items-center gap-1.5 rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 text-sm font-medium text-slate-700 dark:text-slate-200 shadow-lg hover:bg-slate-50 dark:hover:bg-slate-700 sdui-animate-tab"
+                                            >
+                                                {unseenMessageCount > 0 && (
+                                                    <span className="rounded-full bg-blue-600 px-2 py-0.5 text-xs font-semibold text-white">
+                                                        {unseenMessageCount > 99
+                                                            ? '99+'
+                                                            : unseenMessageCount}{' '}
+                                                        neu
+                                                    </span>
+                                                )}
+                                                <svg
+                                                    className="h-4 w-4"
+                                                    viewBox="0 0 20 20"
+                                                    fill="currentColor"
+                                                    aria-hidden="true"
+                                                >
+                                                    <path
+                                                        fillRule="evenodd"
+                                                        d="M10 3a.75.75 0 01.75.75v10.638l3.96-4.158a.75.75 0 111.08 1.04l-5.25 5.5a.75.75 0 01-1.08 0l-5.25-5.5a.75.75 0 111.08-1.04l3.96 4.158V3.75A.75.75 0 0110 3z"
+                                                        clipRule="evenodd"
+                                                    />
+                                                </svg>
+                                            </button>
+                                        )}
                                         {!canWriteInSelectedChat && (
                                             <div className="mb-2 rounded-md border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-3 py-2 text-xs">
                                                 {oneWayDetected
@@ -2097,14 +1766,18 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
                                         )}
                                         <form
                                             onSubmit={handleSendMessage}
-                                            className="flex gap-2"
+                                            className="flex items-end gap-2"
                                         >
-                                            <input
-                                                type="text"
+                                            <textarea
+                                                ref={setComposerRef}
+                                                rows={1}
                                                 value={draft}
                                                 onChange={(e) =>
                                                     setDraft(e.target.value)
                                                 }
+                                                // Enter always inserts a newline;
+                                                // only the send button submits.
+                                                enterKeyHint="enter"
                                                 onFocus={() =>
                                                     setIsComposerFocused(true)
                                                 }
@@ -2123,7 +1796,7 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
                                                 disabled={
                                                     !canWriteInSelectedChat
                                                 }
-                                                className={`flex-1 rounded-full px-4 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 border border-transparent focus:outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-70 ${
+                                                className={`flex-1 min-w-0 resize-none overflow-y-auto max-h-40 leading-5 rounded-2xl px-4 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 border border-transparent focus:outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:opacity-70 ${
                                                     canWriteInSelectedChat
                                                         ? 'bg-slate-100 dark:bg-slate-800'
                                                         : 'bg-slate-200 dark:bg-slate-700'
@@ -2274,8 +1947,10 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
                                                                 type="button"
                                                                 key={`${newsId}-${src}`}
                                                                 onClick={() =>
-                                                                    setLightboxImageUrl(
-                                                                        src,
+                                                                    setLightboxImage(
+                                                                        {
+                                                                            url: src,
+                                                                        },
                                                                     )
                                                                 }
                                                                 className="block w-full rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700"
@@ -2361,33 +2036,12 @@ export function SduiChat({ onUnreadCountChange }: SduiChatProps = {}) {
                 }}
             />
 
-            {lightboxImageUrl && (
-                <div
-                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
-                    onClick={() => setLightboxImageUrl(null)}
-                    role="dialog"
-                    aria-modal="true"
-                    aria-label="Bildvorschau"
-                >
-                    <button
-                        type="button"
-                        className="absolute top-4 right-4 h-10 w-10 rounded-full bg-black/50 text-white hover:bg-black/70 text-2xl leading-none"
-                        onClick={() => setLightboxImageUrl(null)}
-                        aria-label="Schliessen"
-                    >
-                        ×
-                    </button>
-                    <div
-                        className="max-w-[95vw] max-h-[90vh]"
-                        onClick={(event) => event.stopPropagation()}
-                    >
-                        <img
-                            src={lightboxImageUrl}
-                            alt=""
-                            className="max-w-[95vw] max-h-[90vh] w-auto h-auto object-contain rounded-lg"
-                        />
-                    </div>
-                </div>
+            {lightboxImage && (
+                <SduiImageLightbox
+                    key={lightboxImage.url}
+                    image={lightboxImage}
+                    onClose={() => setLightboxImage(null)}
+                />
             )}
         </div>
     );

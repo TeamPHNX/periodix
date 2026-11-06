@@ -18,3 +18,4 @@ generated
 periodix-backend/fetch_timetable.ts
 periodix-backend/timetable.json
 periodix-frontend/src/utils/timetable/lessonMerging.test.ts
+local/

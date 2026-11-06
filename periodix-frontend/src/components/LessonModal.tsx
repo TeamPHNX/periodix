@@ -4,6 +4,7 @@ import type { Lesson, LessonColors } from '../types';
 import { DevJsonPanel } from './lesson-modal/DevJsonPanel';
 import { HomeworkList, ExamsList } from './lesson-modal/HomeworkList';
 import { ColorCustomization } from './lesson-modal/ColorCustomization';
+import { getLessonSubjectName } from '../utils/subjectUtils';
 import {
     LessonInfoBlocks,
     LessonStatus,
@@ -188,9 +189,7 @@ export default function LessonModal({
                                 >
                                     {lessonsArray.map((lsn, idx) => {
                                         const subj =
-                                            lsn.su?.[0]?.name ??
-                                            lsn.activityType ??
-                                            '—';
+                                            getLessonSubjectName(lsn);
                                         const room =
                                             lsn.ro
                                                 ?.map((r) => r.name)

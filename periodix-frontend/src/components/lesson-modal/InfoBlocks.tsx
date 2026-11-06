@@ -1,6 +1,7 @@
 import type { Lesson } from '../../types';
 import SubstitutionNoteIcon from '../SubstitutionNoteIcon';
 import { fmtHM, untisToMinutes } from '../../utils/dates';
+import { getLessonSubjectName } from '../../utils/subjectUtils';
 import {
     getTeacherDisplayText,
     getRoomDisplayText,
@@ -15,7 +16,7 @@ export function LessonInfoBlocks({
     cancelled: boolean;
     showClasses?: boolean;
 }) {
-    const subject = lesson.su?.[0]?.name ?? lesson.activityType ?? '—';
+    const subject = getLessonSubjectName(lesson);
     const subjectLong = lesson.su?.[0]?.longname ?? subject;
     const teacherInfo = getTeacherDisplayText(lesson);
     const roomInfo = getRoomDisplayText(lesson);

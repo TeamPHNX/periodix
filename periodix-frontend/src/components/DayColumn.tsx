@@ -1,5 +1,12 @@
 import type { FC, ReactElement } from 'react';
-import { useState, useLayoutEffect, useRef, useEffect, useMemo } from 'react';
+import {
+    Fragment,
+    useState,
+    useLayoutEffect,
+    useRef,
+    useEffect,
+    useMemo,
+} from 'react';
 import AdaptiveLessonContent from './AdaptiveLessonContent';
 import EllipsisIcon from './EllipsisIcon';
 import SubstitutionNoteIcon from './SubstitutionNoteIcon';
@@ -12,7 +19,10 @@ import {
     getDefaultGradient,
     gradientToSmoothCss,
 } from '../utils/colors';
-import { extractSubjectType } from '../utils/subjectUtils';
+import {
+    extractSubjectType,
+    getLessonSubjectName,
+} from '../utils/subjectUtils';
 import { MOBILE_MEDIA_QUERY } from '../utils/responsive';
 import { hasLessonChanges, getRoomDisplayText } from '../utils/lessonChanges';
 
@@ -366,6 +376,7 @@ const DayColumn: FC<DayColumnProps> = ({
         });
 
         const sortedCuts = Array.from(cuts).sort((a, b) => a - b);
+        const MIN_SLICE_MIN = 5;
         const result: {
             l: Lesson;
             startMin: number;
@@ -382,6 +393,11 @@ const DayColumn: FC<DayColumnProps> = ({
                 const t1 = sortedCuts[i];
                 const t2 = sortedCuts[i + 1];
                 if (t1 >= s && t2 <= e) {
+                    // Skip slivers such as the 3-minute break inside a merged
+                    // double lesson: drawn at the minimum block height they
+                    // poke out from under the next block.
+                    if (t2 - t1 < MIN_SLICE_MIN && e - s >= MIN_SLICE_MIN)
+                        continue;
                     // This segment is covered
                     result.push({
                         l,
@@ -406,17 +422,47 @@ const DayColumn: FC<DayColumnProps> = ({
                 };
             })
             .sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+        // Lessons belonging to one exam must share a cluster: otherwise an exam
+        // slot without a parallel lesson (e.g. the last period of the exam)
+        // spans the full width while the exam outline covers only its column.
+        const clusterSpan = (ev: ClusterBlock): [number, number] => {
+            let s = ev.startMin;
+            let e = ev.endMin;
+            if (!isClassTimetable) {
+                for (const ex of ev.l.exams ?? []) {
+                    const exStart = clamp(
+                        untisToMinutes(ex.startTime),
+                        START_MIN,
+                        END_MIN,
+                    );
+                    const exEnd = clamp(
+                        untisToMinutes(ex.endTime),
+                        START_MIN,
+                        END_MIN,
+                    );
+                    if (exEnd <= exStart) continue;
+                    s = Math.min(s, exStart);
+                    e = Math.max(e, exEnd);
+                }
+            }
+            return [s, e];
+        };
+        const spans = new Map(evs.map((ev) => [ev, clusterSpan(ev)]));
+        const clusterOrder = evs
+            .slice()
+            .sort((a, b) => spans.get(a)![0] - spans.get(b)![0]);
         const clusters: Array<ClusterBlock[]> = [];
         let current: ClusterBlock[] = [];
         let curMaxEnd = -1;
-        for (const ev of evs) {
-            if (current.length === 0 || ev.startMin < curMaxEnd) {
+        for (const ev of clusterOrder) {
+            const [spanStart, spanEnd] = spans.get(ev)!;
+            if (current.length === 0 || spanStart < curMaxEnd) {
                 current.push(ev);
-                curMaxEnd = Math.max(curMaxEnd, ev.endMin);
+                curMaxEnd = Math.max(curMaxEnd, spanEnd);
             } else {
                 clusters.push(current);
                 current = [ev];
-                curMaxEnd = ev.endMin;
+                curMaxEnd = spanEnd;
             }
         }
         if (current.length) clusters.push(current);
@@ -465,6 +511,19 @@ const DayColumn: FC<DayColumnProps> = ({
         return out;
     })();
 
+    // Blocks that really share time with another block. A cluster can have
+    // several columns while a given block overlaps nothing (an exam period with
+    // no parallel lesson), so hiding and "stacked" hints must use this instead
+    // of colCount.
+    const overlappingBlocks = new Set(
+        blocks.filter((b) =>
+            blocks.some(
+                (o) =>
+                    o !== b && o.startMin < b.endMin && b.startMin < o.endMin,
+            ),
+        ),
+    );
+
     // Track the last bottom pixel per visual column signature to enforce gaps
     const lastBottomByCol: Record<string, number> = {};
 
@@ -482,6 +541,87 @@ const DayColumn: FC<DayColumnProps> = ({
             }
         });
     }
+
+    // Horizontal placement of a block. Shared by the lessons and the exam
+    // outlines so the outline always matches the blocks it surrounds.
+    const LAYOUT_GAP_PCT = 0.5; // Minimal gap for nearly seamless side-by-side lessons
+    // In day view, use estimatedWidth directly as it's more reliable than measuredWidth
+    // which can be stale after swipe transitions. measuredWidth may not update properly
+    // when the component re-renders with new data after day navigation.
+    const layoutWidthPx =
+        isDayView && estimatedWidth > 0 ? estimatedWidth : measuredWidth;
+    const getHorizontalLayout = (b: Block) => {
+        // Determine how many overlapping columns to render
+        // Desktop wide: render all columns
+        // Narrow (measured) non-mobile: collapse to 1 (first column)
+        // Mobile: render as many as reasonably fit at a minimum width; otherwise collapse to 1
+        const gapPx = Math.max(0, layoutWidthPx * (LAYOUT_GAP_PCT / 100));
+        const MOBILE_MIN_COLUMN_WIDTH = 60; // px - min per-lesson width on mobile to allow side-by-side
+        // In day view, allow more columns with smaller min width; in week view use larger min width to show fewer columns
+        const DESKTOP_MIN_COLUMN_WIDTH = isDayView ? 25 : 80;
+        const DESKTOP_MAX_COLUMNS = isDayView ? 12 : 8;
+
+        // Use weekMaxColCount for consistent layout across all days when available
+        const effectiveColCount = weekMaxColCount
+            ? Math.max(b.colCount, weekMaxColCount)
+            : b.colCount;
+
+        let visibleCols = effectiveColCount;
+        if (effectiveColCount > 1) {
+            const minColWidth = isMobile
+                ? MOBILE_MIN_COLUMN_WIDTH
+                : DESKTOP_MIN_COLUMN_WIDTH;
+            const maxFit = Math.max(
+                1,
+                Math.floor((layoutWidthPx + gapPx) / (minColWidth + gapPx)),
+            );
+            visibleCols = Math.min(
+                effectiveColCount,
+                isMobile ? maxFit : Math.min(DESKTOP_MAX_COLUMNS, maxFit),
+            );
+        }
+
+        const isCollapsed = visibleCols < b.colCount; // Only collapsed if actual lessons are hidden
+        const isMobileCollapsed = isMobile && isCollapsed;
+        // In day view mode, don't apply collapseNarrow since we have full width available
+        const narrowCollapse = !isMobile && collapseNarrow && !isDayView;
+        const isDesktopCollapsed =
+            !isMobile && !isDayView && (collapseNarrow || isCollapsed);
+
+        // Hide non-visible columns depending on state
+        // Note: we check against b.colCount (actual lessons) not effectiveColCount (layout slots)
+        let hidden = false;
+        if (b.colCount > 1 && overlappingBlocks.has(b)) {
+            if (narrowCollapse) {
+                // Show the first column (Highest Priority)
+                hidden = b.colIndex !== 0;
+            } else {
+                hidden = b.colIndex >= visibleCols;
+            }
+        }
+
+        // Use b.colCount (actual lessons in this cluster) for width calculation
+        // so lessons always fill the whole row when they fit
+        const layoutColCount = isCollapsed ? visibleCols : b.colCount;
+        let widthPct =
+            (100 - LAYOUT_GAP_PCT * (layoutColCount - 1)) / layoutColCount;
+        let leftPct = b.colIndex * (widthPct + LAYOUT_GAP_PCT);
+        if (layoutColCount > 1 && narrowCollapse) {
+            widthPct = 100;
+            leftPct = 0;
+        } else if (b.colCount > 1 && isCollapsed && visibleCols <= 1) {
+            widthPct = 100;
+            leftPct = 0;
+        }
+
+        return {
+            hidden,
+            widthPct,
+            leftPct,
+            isMobileCollapsed,
+            isDesktopCollapsed,
+        };
+    };
 
     const holiday = getHolidayForDate(holidays, day);
 
@@ -652,107 +792,64 @@ const DayColumn: FC<DayColumnProps> = ({
                     }px, rgba(100,116,139,0.10) ${gridSlotMinutes * SCALE}px)`,
                 }}
             />
-            {/* Exam Outlines - render one outline per exam (not per block) */}
+            {/* Exam outlines: one per exam, spanning the exam's time range over the
+                column its lessons occupy. The tint sits behind the lessons and the
+                border on top, so the lessons themselves are not washed out. */}
             {Array.from(examGroups.entries()).map(([examId, groupBlocks]) => {
-                if (groupBlocks.length === 0) return null;
-                const firstBlock = groupBlocks[0];
-                const exam = firstBlock.l.exams?.find((e) => e.id === examId);
+                const exam = groupBlocks[0]?.l.exams?.find(
+                    (e) => e.id === examId,
+                );
                 if (!exam) return null;
 
-                // Use exam times for vertical span
-                const examStartMin = clamp(
+                let left = Infinity;
+                let right = -Infinity;
+                let startMin = clamp(
                     untisToMinutes(exam.startTime),
                     START_MIN,
                     END_MIN,
                 );
-                const examEndMin = Math.max(
-                    examStartMin,
-                    clamp(untisToMinutes(exam.endTime), START_MIN, END_MIN),
+                let endMin = clamp(
+                    untisToMinutes(exam.endTime),
+                    START_MIN,
+                    END_MIN,
                 );
-
-                const GAP_PCT = 1.5;
-                // In day view, use estimatedWidth directly as it's more reliable than measuredWidth
-                const examEffectiveWidth =
-                    isDayView && estimatedWidth > 0
-                        ? estimatedWidth
-                        : measuredWidth;
-                const gapPx = Math.max(0, examEffectiveWidth * (GAP_PCT / 100));
-                const MOBILE_MIN_COLUMN_WIDTH = 140;
-                const DESKTOP_MIN_COLUMN_WIDTH = isDayView ? 25 : 80;
-                const DESKTOP_MAX_COLUMNS = isDayView ? 12 : 8;
-
-                const isCollapsedToSingle =
-                    !isMobile && collapseNarrow && !isDayView;
-
-                // Use the first block's column info for positioning
-                // All blocks with the same exam should be in the same column position
-                const colCount = firstBlock.colCount;
-                const colIndex = firstBlock.colIndex;
-
-                let visibleCols = colCount;
-                if (isMobile && colCount > 1) {
-                    const maxFit = Math.max(
-                        1,
-                        Math.floor(
-                            (examEffectiveWidth + gapPx) /
-                                (MOBILE_MIN_COLUMN_WIDTH + gapPx),
-                        ),
-                    );
-                    visibleCols = Math.min(colCount, maxFit);
-                } else if (!isMobile && colCount > 1) {
-                    const maxFit = Math.max(
-                        1,
-                        Math.floor(
-                            (examEffectiveWidth + gapPx) /
-                                (DESKTOP_MIN_COLUMN_WIDTH + gapPx),
-                        ),
-                    );
-                    const cappedFit = Math.min(DESKTOP_MAX_COLUMNS, maxFit);
-                    visibleCols = Math.min(colCount, cappedFit);
+                for (const b of groupBlocks) {
+                    const pos = getHorizontalLayout(b);
+                    if (pos.hidden) continue;
+                    left = Math.min(left, pos.leftPct);
+                    right = Math.max(right, pos.leftPct + pos.widthPct);
+                    startMin = Math.min(startMin, b.startMin);
+                    endMin = Math.max(endMin, b.endMin);
                 }
+                if (left === Infinity) return null;
 
-                // Skip if this column is not visible
-                if (isCollapsedToSingle) {
-                    if (colIndex > 0) return null;
-                } else if (colIndex >= visibleCols) {
-                    return null;
-                }
-
-                // Calculate width/position
-                let widthPct: number;
-                let leftPct: number;
-
-                if (isCollapsedToSingle || visibleCols <= 1) {
-                    widthPct = 100;
-                    leftPct = 0;
-                } else {
-                    const singleColWidth =
-                        (100 - GAP_PCT * (visibleCols - 1)) / visibleCols;
-                    leftPct = colIndex * (singleColWidth + GAP_PCT);
-                    widthPct = singleColWidth;
-                }
-
+                // Same vertical snapping as the lesson blocks
                 const PAD_TOP = isMobile ? 2 : 4;
-                const PAD_BOTTOM = isMobile ? 0 : 0; // Match lesson padding for proper alignment
-                const startPxRaw =
-                    (examStartMin - START_MIN) * SCALE + headerPx;
-                const endPxRaw = (examEndMin - START_MIN) * SCALE + headerPx;
-                const topPx = Math.round(startPxRaw) + PAD_TOP;
-                const endPx = Math.round(endPxRaw) - PAD_BOTTOM;
-                const heightPx = Math.max(isMobile ? 30 : 14, endPx - topPx);
+                const GAP_BUDGET = isMobile ? 1 : 2;
+                const topPx =
+                    Math.round((startMin - START_MIN) * SCALE + headerPx) +
+                    PAD_TOP;
+                const bottomPx =
+                    Math.round((endMin - START_MIN) * SCALE + headerPx) -
+                    GAP_BUDGET;
+                const style = {
+                    top: topPx,
+                    height: Math.max(isMobile ? 30 : 14, bottomPx - topPx),
+                    left: `${left}%`,
+                    width: `${right - left}%`,
+                };
 
                 return (
-                    <div
-                        key={`exam-${examId}`}
-                        className="absolute pointer-events-none z-10 rounded-xl border border-yellow-400 dark:border-yellow-300 bg-yellow-400/20 dark:bg-yellow-400/20"
-                        style={{
-                            top: topPx,
-                            height: heightPx,
-                            left: `${leftPct}%`,
-                            width: `${widthPct}%`,
-                            borderWidth: '3px',
-                        }}
-                    />
+                    <Fragment key={`exam-${examId}`}>
+                        <div
+                            className="absolute pointer-events-none rounded-xl bg-yellow-400/20 dark:bg-yellow-300/10"
+                            style={style}
+                        />
+                        <div
+                            className="absolute pointer-events-none z-10 rounded-xl border-[3px] border-yellow-400 dark:border-yellow-300"
+                            style={style}
+                        />
+                    </Fragment>
                 );
             })}
             {blocks
@@ -762,107 +859,47 @@ const DayColumn: FC<DayColumnProps> = ({
                 .sort((a, b) => a.startMin - b.startMin || b.endMin - a.endMin)
                 .map((b) => {
                     const { l } = b;
-                    // Determine how many overlapping columns to render
-                    // Desktop wide: render all columns
-                    // Narrow (measured) non-mobile: collapse to 1 (rightmost)
-                    // Mobile: render as many as reasonably fit at a minimum width; otherwise collapse to 1
-                    const GAP_PCT = 0.5; // Minimal gap for nearly seamless side-by-side lessons
-                    // In day view, use estimatedWidth directly as it's more reliable than measuredWidth
-                    // which can be stale after swipe transitions. measuredWidth may not update properly
-                    // when the component re-renders with new data after day navigation.
-                    const effectiveWidth =
-                        isDayView && estimatedWidth > 0
-                            ? estimatedWidth
-                            : measuredWidth;
-                    const gapPx = Math.max(0, effectiveWidth * (GAP_PCT / 100));
-                    const MOBILE_MIN_COLUMN_WIDTH = 60; // px - min per-lesson width on mobile to allow side-by-side
-                    // In day view, allow more columns with smaller min width; in week view use larger min width to show fewer columns
-                    const DESKTOP_MIN_COLUMN_WIDTH = isDayView ? 25 : 80; // Larger min width in week view = fewer columns
-                    // In day view, allow more columns since we have more space
-                    const DESKTOP_MAX_COLUMNS = isDayView ? 12 : 8;
-
-                    // Use weekMaxColCount for consistent layout across all days when available
-                    const effectiveColCount = weekMaxColCount
-                        ? Math.max(b.colCount, weekMaxColCount)
-                        : b.colCount;
-
-                    let visibleCols = effectiveColCount;
-
-                    if (isMobile) {
-                        if (effectiveColCount > 1) {
-                            const maxFit = Math.max(
-                                1,
-                                Math.floor(
-                                    (effectiveWidth + gapPx) /
-                                        (MOBILE_MIN_COLUMN_WIDTH + gapPx),
-                                ),
-                            );
-                            visibleCols = Math.min(effectiveColCount, maxFit);
-                        }
-                    } else {
-                        // Desktop overcrowding check with explicit cap
-                        if (effectiveColCount > 1) {
-                            const maxFit = Math.max(
-                                1,
-                                Math.floor(
-                                    (effectiveWidth + gapPx) /
-                                        (DESKTOP_MIN_COLUMN_WIDTH + gapPx),
-                                ),
-                            );
-                            const cappedFit = Math.min(
-                                DESKTOP_MAX_COLUMNS,
-                                maxFit,
-                            );
-                            visibleCols = Math.min(
-                                effectiveColCount,
-                                cappedFit,
-                            );
-                        }
-                    }
-
-                    const isCollapsed = visibleCols < b.colCount; // Only collapsed if actual lessons are hidden
-                    const isMobileCollapsed = isMobile && isCollapsed; // Keep for mobile-specific styling if needed
-                    // In day view mode, don't apply collapseNarrow since we have full width available
-                    // (similar to mobile behavior which doesn't use collapseNarrow)
-                    const isDesktopCollapsed =
-                        !isMobile &&
-                        !isDayView &&
-                        (collapseNarrow || isCollapsed);
-
-                    // Hide non-visible columns depending on state
-                    // Note: we check against b.colCount (actual lessons) not effectiveColCount (layout slots)
-                    if (b.colCount > 1) {
-                        // In day view, skip collapseNarrow check - we have enough space for side-by-side
-                        if (!isMobile && collapseNarrow && !isDayView) {
-                            // Show the first column (Highest Priority)
-                            if (b.colIndex !== 0) return null;
-                        } else if (b.colIndex >= visibleCols) {
-                            // Hide lessons that don't fit in the visible columns
-                            return null;
-                        }
-                    }
+                    const {
+                        hidden,
+                        widthPct: layoutWidthPct,
+                        leftPct: layoutLeftPct,
+                        isMobileCollapsed,
+                        isDesktopCollapsed,
+                    } = getHorizontalLayout(b);
+                    if (hidden) return null;
+                    const effectiveWidth = layoutWidthPx;
+                    let widthPct = layoutWidthPct;
+                    let leftPct = layoutLeftPct;
 
                     const cancelled = l.code === 'cancelled';
                     const irregular = l.code === 'irregular';
                     // Determine if this lesson represents a merged (double / multi) lesson
                     const isMerged = isLessonMerged(l);
                     const hasChanges = hasLessonChanges(l);
-                    const subject = l.su?.[0]?.name ?? l.activityType ?? '—';
+                    const subject = getLessonSubjectName(l);
                     const subjectType = extractSubjectType(subject);
                     const displaySubject = subjectType;
                     const room = l.ro?.map((r) => r.name).join(', ');
                     const teacher = l.te?.map((t) => t.name).join(', ');
-                    const roomMobile = room
+                    // Phone columns are ~60px wide: drop the room suffix (WB/TV/B) and
+                    // show only the first room plus a count, e.g. "N3.25 +1"
+                    const roomMobileParts = room
                         ? room
                               .split(',')
                               .map((part) =>
-                                  part.replace(/\s+(?:WB?|TV|B)$/i, '').trim(),
+                                  part.replace(/\s+(?:WB?|TV(?:\/B)?|B)$/i, '').trim(),
                               )
-                              .join(', ')
-                        : room;
+                              .filter(Boolean)
+                        : [];
+                    const roomMobile =
+                        roomMobileParts.length > 1
+                            ? `${roomMobileParts[0]} +${roomMobileParts.length - 1}`
+                            : (roomMobileParts[0] ?? room);
 
-                    // Mobile single-lesson (non-overlapping) detection for special styling tweaks
-                    const singleMobile = isMobile && b.colCount === 1;
+                    // Mobile lesson drawn alone at full column width (no overlap, or
+                    // overlaps collapsed behind it): use the compact single-lesson styling
+                    const singleMobile =
+                        isMobile && (b.colCount === 1 || widthPct >= 100);
 
                     const effectiveColor =
                         lessonColors[subjectType] ??
@@ -881,36 +918,6 @@ const DayColumn: FC<DayColumnProps> = ({
                         : irregular
                           ? 'linear-gradient(to right, rgba(16, 185, 129, 0.6), rgba(16, 185, 129, 0.55), rgba(16, 185, 129, 0.6))'
                           : null;
-
-                    // Use b.colCount (actual lessons in this cluster) for width calculation
-                    // so lessons always fill the whole row when they fit
-                    // Only use visibleCols when some lessons are actually hidden (collapsed)
-                    const layoutColCount = isCollapsed
-                        ? visibleCols
-                        : b.colCount;
-
-                    let widthPct =
-                        (100 - GAP_PCT * (layoutColCount - 1)) / layoutColCount;
-                    let leftPct = b.colIndex * (widthPct + GAP_PCT);
-                    if (layoutColCount > 1) {
-                        // In day view, skip collapseNarrow check - we have enough space for side-by-side
-                        if (!isMobile && collapseNarrow && !isDayView) {
-                            widthPct = 100;
-                            leftPct = 0;
-                        } else if (isCollapsed) {
-                            if (visibleCols <= 1) {
-                                widthPct = 100;
-                                leftPct = 0;
-                            } else {
-                                widthPct =
-                                    (100 - GAP_PCT * (visibleCols - 1)) /
-                                    visibleCols;
-                                // We are showing the first N columns (0 to visibleCols-1)
-                                // So visibleIndex is just colIndex
-                                leftPct = b.colIndex * (widthPct + GAP_PCT);
-                            }
-                        }
-                    }
 
                     // Pixel-snapped positioning
                     // Mobile: tighter outer padding but slightly larger minimum block height
@@ -956,7 +963,8 @@ const DayColumn: FC<DayColumnProps> = ({
                     // If the block is too short vertically, force stacking to avoid cramped side-by-side layout
                     const forceStackByHeight =
                         !isMobile && b.colCount > 1 && heightPx < 36;
-                    if (forceStackByHeight && b.colIndex > 0) {
+                    const hasOverlap = overlappingBlocks.has(b);
+                    if (forceStackByHeight && b.colIndex > 0 && hasOverlap) {
                         return null; // only render the first column when forced to stack
                     }
                     // Extra right padding for indicators/icons on desktop
@@ -1009,13 +1017,13 @@ const DayColumn: FC<DayColumnProps> = ({
                     // Calculate actual content dimensions for AdaptiveLessonContent
                     // Lesson width = effectiveWidth * (widthPct / 100) - horizontal padding (p-2.5 sm:p-3 = ~12px each side)
                     const lessonWidthPx = effectiveWidth * (widthPct / 100);
-                    // Must match the block's CSS: px-2.5/sm:px-3 on both sides, pt + pb
+                    // Must match the block's CSS: px-1.5/sm:px-3 on both sides, pt + pb
                     // (pb-1 for cancelled/irregular) and their 3px border on each side.
                     // The previous fixed guesses (16px / 4px when cramped) overestimated
                     // the space, so the chosen layout got clipped at the bottom.
                     const borderPx = cancelled || irregular ? 6 : 0;
                     const padUnitPx = isSmUp ? 12 : 10;
-                    const horizontalPadding = 2 * padUnitPx + borderPx;
+                    const horizontalPadding = 2 * (isSmUp ? 12 : 6) + borderPx;
                     const contentWidthPx = Math.max(
                         0,
                         lessonWidthPx -
@@ -1070,6 +1078,12 @@ const DayColumn: FC<DayColumnProps> = ({
                         highlight: boolean;
                     } | null;
 
+                    // Narrow desktop blocks: "N3.25 B +1" instead of a list cut mid-name
+                    const roomInline =
+                        lessonWidthPx < 140 && (l.ro?.length ?? 0) > 1
+                            ? `${l.ro![0].name.replace(/\s+(?:WB?|TV(?:\/B)?|B)$/i, '')} +${l.ro!.length - 1}`
+                            : room;
+
                     const getSecondaryInfo = (): SecondaryInfo => {
                         // Priority 1: Teacher changed to empty - show "---"
                         if (teacherChangedToEmpty) {
@@ -1084,7 +1098,7 @@ const DayColumn: FC<DayColumnProps> = ({
                         if (roomChanged && room) {
                             return {
                                 type: 'room',
-                                text: room,
+                                text: roomInline ?? room,
                                 highlight: true,
                             };
                         }
@@ -1106,7 +1120,7 @@ const DayColumn: FC<DayColumnProps> = ({
                         if (room) {
                             return {
                                 type: 'room',
-                                text: room,
+                                text: roomInline ?? room,
                                 highlight: false,
                             };
                         }
@@ -1170,13 +1184,50 @@ const DayColumn: FC<DayColumnProps> = ({
                     const hasBorder = cancelled || irregular;
                     // Compact phone blocks (two lines) can't spare the full
                     // vertical padding: on short screens it clipped the subject
+                    // Short phone blocks: start the text below the corner icons
+                    // (badges top-right, stack glyph top-left) so they don't cover the subject
+                    const hasMobileCornerIcons =
+                        (isMobileCollapsed && hasOverlap) ||
+                        (l.homework?.length ?? 0) > 0 ||
+                        !!l.info ||
+                        !!l.lstext ||
+                        !!l.substText ||
+                        (!isClassTimetable && (l.exams?.length ?? 0) > 0);
+                    // Desktop: the icon row (top-right, 8px from the edge) sits on the first
+                    // text line. One-line layouts reserve its width so it doesn't cover text.
+                    const desktopIconWidths = [
+                        (isDesktopCollapsed || isMobileCollapsed) && hasOverlap
+                            ? 16
+                            : 0,
+                        (l.homework?.length ?? 0) > 0 ? 12 : 0,
+                        l.info ? 12 : 0,
+                        l.lstext ? 12 : 0,
+                        l.substText ? 12 : 0,
+                        !isClassTimetable && (l.exams?.length ?? 0) > 0 ? 12 : 0,
+                        hasChanges ? 12 : 0,
+                    ].filter((w) => w > 0);
+                    const desktopIconRowPx =
+                        desktopIconWidths.reduce((a, w) => a + w, 0) +
+                        4 * Math.max(0, desktopIconWidths.length - 1);
+                    const inlineIconReservePx =
+                        isSmUp && desktopIconRowPx > 0
+                            ? Math.max(
+                                  0,
+                                  8 + desktopIconRowPx + 4 - (12 + contentPadRight),
+                              )
+                            : 0;
+                    const inlineLineStyle = inlineIconReservePx
+                        ? { paddingRight: inlineIconReservePx }
+                        : undefined;
                     const paddingClasses = isTinyMobileSingle
-                        ? hasBorder
-                            ? 'px-2.5 py-0.5'
-                            : 'px-2.5 py-1'
+                        ? hasMobileCornerIcons
+                            ? 'px-1.5 pt-3 pb-1'
+                            : hasBorder
+                              ? 'px-1.5 py-0.5'
+                              : 'px-1.5 py-1'
                         : hasBorder
-                          ? 'px-2.5 pt-2.5 pb-1 sm:px-3 sm:pt-3 sm:pb-1'
-                          : 'px-2.5 pt-2.5 pb-3 sm:px-3 sm:pt-3 sm:pb-3';
+                          ? 'px-1.5 pt-2.5 pb-1 sm:px-3 sm:pt-3 sm:pb-1'
+                          : 'px-1.5 pt-2.5 pb-3 sm:px-3 sm:pt-3 sm:pb-3';
 
                     return (
                         <div
@@ -1213,11 +1264,11 @@ const DayColumn: FC<DayColumnProps> = ({
                             }}
                         >
                             {/* Indicator for collapsed overlaps (mobile overlay position) */}
-                            {isMobileCollapsed && b.colCount > 1 && (
+                            {isMobileCollapsed && hasOverlap && (
                                 <>
                                     {/* subtle left edge bar to suggest stacking */}
                                     <div
-                                        className="absolute inset-y-0 left-0 w-1 rounded-l-md bg-black/20 dark:bg-white/20 pointer-events-none"
+                                        className="absolute inset-y-0 left-0 w-1 rounded-l-xl bg-black/20 dark:bg-white/20 pointer-events-none"
                                         aria-hidden="true"
                                         style={{ mixBlendMode: 'soft-light' }}
                                     />
@@ -1226,8 +1277,8 @@ const DayColumn: FC<DayColumnProps> = ({
                                         className="absolute inset-0 pointer-events-none"
                                         aria-hidden="true"
                                     >
-                                        <div className="absolute inset-0 rounded-md border border-white/25 dark:border-white/20 opacity-40" />
-                                        <div className="absolute inset-[2px] rounded-[6px] border border-black/25 dark:border-black/40 opacity-35" />
+                                        <div className="absolute inset-0 rounded-[inherit] border border-white/25 dark:border-white/20 opacity-40" />
+                                        <div className="absolute inset-[2px] rounded-[10px] border border-black/25 dark:border-black/40 opacity-35" />
                                     </div>
                                     {/* layered tabs glyph (two overlapping rectangles) */}
                                     <div
@@ -1262,11 +1313,11 @@ const DayColumn: FC<DayColumnProps> = ({
                                 </>
                             )}
                             {/* Subtle stacked design when column is narrow (between mobile and side-by-side) */}
-                            {isDesktopCollapsed && b.colCount > 1 && (
+                            {isDesktopCollapsed && hasOverlap && (
                                 <>
                                     {/* left edge bar to suggest layering */}
                                     <div
-                                        className="absolute inset-y-0 left-0 w-1 rounded-l-md bg-black/15 dark:bg-white/15 pointer-events-none hidden sm:block"
+                                        className="absolute inset-y-0 left-0 w-1 rounded-l-xl bg-black/15 dark:bg-white/15 pointer-events-none hidden sm:block"
                                         aria-hidden="true"
                                         style={{ mixBlendMode: 'soft-light' }}
                                     />
@@ -1275,8 +1326,8 @@ const DayColumn: FC<DayColumnProps> = ({
                                         className="absolute inset-0 pointer-events-none hidden sm:block"
                                         aria-hidden="true"
                                     >
-                                        <div className="absolute inset-0 rounded-md border border-white/20 dark:border-white/15 opacity-30" />
-                                        <div className="absolute inset-[2px] rounded-[6px] border border-black/20 dark:border-black/35 opacity-25" />
+                                        <div className="absolute inset-0 rounded-[inherit] border border-white/20 dark:border-white/15 opacity-30" />
+                                        <div className="absolute inset-[2px] rounded-[10px] border border-black/20 dark:border-black/35 opacity-25" />
                                     </div>
                                 </>
                             )}
@@ -1286,7 +1337,7 @@ const DayColumn: FC<DayColumnProps> = ({
                                     {/* Desktop/narrow stacked indicator placed with badges when overlaps are collapsed */}
                                     {(isDesktopCollapsed ||
                                         isMobileCollapsed) &&
-                                        b.colCount > 1 && (
+                                        hasOverlap && (
                                             <div
                                                 className="w-4 h-4 rounded-[4px] bg-black/25 dark:bg-white/20 flex items-center justify-center shadow-sm ring-1 ring-black/20 dark:ring-white/20"
                                                 title="Multiple overlapping lessons"
@@ -1432,7 +1483,7 @@ const DayColumn: FC<DayColumnProps> = ({
                                 }}
                             >
                                 {/* Mobile: absolute icons overlay (no layout impact) */}
-                                <div className="sm:hidden absolute top-2 right-2 flex flex-row-reverse gap-1 items-center pointer-events-none">
+                                <div className="sm:hidden absolute top-1 right-1 flex flex-row-reverse gap-1 items-center pointer-events-none">
                                     {/* Mobile badges: show limited badges for single lessons, up to 3 for merged lessons */}
                                     {(() => {
                                         const badges: ReactElement[] = [];
@@ -1563,7 +1614,7 @@ const DayColumn: FC<DayColumnProps> = ({
                                 </div>
 
                                 {/* Mobile centered layout */}
-                                <div className="flex flex-col items-center justify-center text-center gap-0 h-full sm:hidden px-0.5">
+                                <div className="flex flex-col items-center justify-center-safe text-center gap-0 h-full overflow-hidden sm:hidden px-0.5">
                                     {/* Info preview removed from mobile timetable view */}
                                     <div
                                         className={`font-semibold leading-tight w-full whitespace-nowrap truncate ${
@@ -1591,25 +1642,27 @@ const DayColumn: FC<DayColumnProps> = ({
                                             return null;
                                         return (
                                             <div
-                                                className={`text-[11px] leading-tight truncate max-w-full flex flex-wrap justify-center gap-x-1 ${
+                                                className={`text-[11px] leading-tight truncate max-w-full ${
                                                     cancelled
                                                         ? 'lesson-cancelled-teacher'
                                                         : ''
                                                 }`}
                                             >
                                                 {(l.te ?? []).map((t, i) => (
-                                                    <span
-                                                        key={i}
-                                                        className={
-                                                            t.orgname
-                                                                ? singleMobile
-                                                                    ? 'change-highlight-mobile'
-                                                                    : 'change-highlight-inline'
-                                                                : undefined
-                                                        }
-                                                    >
-                                                        {t.name}
-                                                    </span>
+                                                    <Fragment key={i}>
+                                                        {i > 0 && ' '}
+                                                        <span
+                                                            className={
+                                                                t.orgname
+                                                                    ? singleMobile
+                                                                        ? 'change-highlight-mobile'
+                                                                        : 'change-highlight-inline'
+                                                                    : undefined
+                                                            }
+                                                        >
+                                                            {t.name}
+                                                        </span>
+                                                    </Fragment>
                                                 ))}
                                             </div>
                                         );
@@ -1637,13 +1690,14 @@ const DayColumn: FC<DayColumnProps> = ({
                                                 }`}
                                             >
                                                 <div
-                                                    className={
+                                                    className={`max-w-full truncate ${
                                                         roomInfo.hasChanges
                                                             ? singleMobile
                                                                 ? 'change-highlight-mobile'
                                                                 : 'change-highlight opacity-90'
                                                             : 'opacity-90'
-                                                    }
+                                                    }`}
+                                                    title={room}
                                                 >
                                                     {roomMobile}
                                                 </div>
@@ -1894,7 +1948,10 @@ const DayColumn: FC<DayColumnProps> = ({
                                                     // Level 4: Subject + Secondary info inline (very compact)
                                                     // Uses hierarchical priority: teacher empty > room change > teacher change > normal room
                                                     inlineRoom: (
-                                                        <div className="flex flex-wrap items-baseline gap-x-2">
+                                                        <div
+                                                            className="flex flex-wrap items-baseline gap-x-2"
+                                                            style={inlineLineStyle}
+                                                        >
                                                             <div
                                                                 className={`font-semibold leading-tight text-[13px] ${
                                                                     cancelled
@@ -1906,7 +1963,7 @@ const DayColumn: FC<DayColumnProps> = ({
                                                             </div>
                                                             {secondaryInfo && (
                                                                 <div
-                                                                    className={`leading-tight text-[12px] ${
+                                                                    className={`leading-tight text-[12px] whitespace-nowrap ${
                                                                         cancelled
                                                                             ? secondaryInfo.type ===
                                                                               'room'
@@ -1932,7 +1989,10 @@ const DayColumn: FC<DayColumnProps> = ({
                                                     ),
                                                     // Level 6: Subject + Room + Teacher all inline (single-line saver)
                                                     inlineAll: (
-                                                        <div className="flex flex-wrap items-baseline gap-x-2 text-[12px] leading-tight">
+                                                        <div
+                                                            className="flex flex-wrap items-baseline gap-x-2 text-[12px] leading-tight"
+                                                            style={inlineLineStyle}
+                                                        >
                                                             <div
                                                                 className={`font-semibold ${
                                                                     cancelled
@@ -1944,7 +2004,7 @@ const DayColumn: FC<DayColumnProps> = ({
                                                             </div>
                                                             {room && (
                                                                 <div
-                                                                    className={`flex items-center gap-x-1 ${
+                                                                    className={`whitespace-nowrap ${
                                                                         cancelled
                                                                             ? 'lesson-cancelled-room'
                                                                             : 'opacity-95'
@@ -1957,7 +2017,7 @@ const DayColumn: FC<DayColumnProps> = ({
                                                                                 : undefined
                                                                         }
                                                                     >
-                                                                        {room}
+                                                                        {roomInline}
                                                                     </span>
                                                                 </div>
                                                             )}
@@ -1965,7 +2025,7 @@ const DayColumn: FC<DayColumnProps> = ({
                                                                 l.te.length >
                                                                     0 && (
                                                                     <div
-                                                                        className={`flex items-center gap-x-1 ${
+                                                                        className={`flex items-center gap-x-1 whitespace-nowrap ${
                                                                             cancelled
                                                                                 ? 'lesson-cancelled-teacher'
                                                                                 : ''
@@ -1998,7 +2058,10 @@ const DayColumn: FC<DayColumnProps> = ({
                                                     ),
                                                     // Level 5: Subject only (minimal) - with hierarchical secondary info for side-by-side
                                                     subjectOnly: (
-                                                        <div className="flex items-baseline gap-x-1 text-[13px] leading-tight">
+                                                        <div
+                                                            className="flex flex-wrap items-baseline gap-x-1 text-[13px] leading-tight"
+                                                            style={inlineLineStyle}
+                                                        >
                                                             <div
                                                                 className={`font-semibold ${
                                                                     cancelled
@@ -2011,7 +2074,7 @@ const DayColumn: FC<DayColumnProps> = ({
                                                             {isSideBySide &&
                                                                 secondaryInfo && (
                                                                     <div
-                                                                        className={`text-[12px] ${
+                                                                        className={`text-[12px] whitespace-nowrap ${
                                                                             cancelled
                                                                                 ? secondaryInfo.type ===
                                                                                   'room'
